@@ -32,6 +32,7 @@ public class DanWebSocketServer {
 
     private final Mode mode;
     private final long ttl;
+    private final long flushIntervalMs;
     private final String path;
     private boolean authEnabled;
     private long authTimeout = 5000;
@@ -41,6 +42,7 @@ public class DanWebSocketServer {
     private Channel serverChannel;
 
     private final Map<String, PrincipalTX> principals = new ConcurrentHashMap<>();
+    private final Map<String, Set<InternalSession>> principalIndex = new ConcurrentHashMap<>();
     private final Map<String, InternalSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, InternalSession> tmpSessions = new ConcurrentHashMap<>();
     private final Map<ChannelId, String> chToUuid = new ConcurrentHashMap<>();
@@ -55,8 +57,13 @@ public class DanWebSocketServer {
     private final TopicNamespace topicNamespace = new TopicNamespace();
 
     public DanWebSocketServer(int port, String path, Mode mode, long ttlMs) {
+        this(port, path, mode, ttlMs, 100);
+    }
+
+    public DanWebSocketServer(int port, String path, Mode mode, long ttlMs, long flushIntervalMs) {
         this.mode = (mode == Mode.INDIVIDUAL) ? Mode.PRINCIPAL : mode;
         this.ttl = ttlMs;
+        this.flushIntervalMs = flushIntervalMs;
         this.path = path;
 
         try {
@@ -178,8 +185,8 @@ public class DanWebSocketServer {
 
     public List<DanWebSocketSession> getSessionsByPrincipal(String principal) {
         List<DanWebSocketSession> result = new ArrayList<>();
-        for (InternalSession i : sessions.values()) {
-            if (Objects.equals(i.session.principal(), principal)) result.add(i.session);
+        for (InternalSession i : getPrincipalSessions(principal)) {
+            result.add(i.session);
         }
         return result;
     }
@@ -202,6 +209,7 @@ public class DanWebSocketServer {
         }
         sessions.clear();
         tmpSessions.clear();
+        principalIndex.clear();
         try {
             if (serverChannel != null) serverChannel.close().sync();
             bossGroup.shutdownGracefully(0, 100, TimeUnit.MILLISECONDS).sync();
@@ -305,6 +313,23 @@ public class DanWebSocketServer {
         return tmpSessions.get(uuid);
     }
 
+    private void addToPrincipalIndex(String principal, InternalSession s) {
+        principalIndex.computeIfAbsent(principal, k -> ConcurrentHashMap.newKeySet()).add(s);
+    }
+
+    private void removeFromPrincipalIndex(String principal, InternalSession s) {
+        Set<InternalSession> set = principalIndex.get(principal);
+        if (set != null) {
+            set.remove(s);
+            if (set.isEmpty()) principalIndex.remove(principal);
+        }
+    }
+
+    private Set<InternalSession> getPrincipalSessions(String name) {
+        Set<InternalSession> set = principalIndex.get(name);
+        return set != null ? set : Collections.emptySet();
+    }
+
     private PrincipalTX getPrincipal(String name) {
         return principals.computeIfAbsent(name, n -> {
             PrincipalTX ptx = new PrincipalTX(n);
@@ -315,16 +340,16 @@ public class DanWebSocketServer {
 
     private void bindPrincipalTX(PrincipalTX ptx) {
         ptx.setOnValue(frame -> {
-            for (InternalSession i : sessions.values()) {
-                if (matchesPrincipal(i, ptx.name()) && i.session.state() == DanWebSocketSession.State.READY
+            for (InternalSession i : getPrincipalSessions(ptx.name())) {
+                if (i.session.state() == DanWebSocketSession.State.READY
                         && i.ch != null && i.ch.isActive()) {
                     i.bulkQueue.enqueue(frame);
                 }
             }
         });
         ptx.setOnIncremental((keyFrame, syncFrame, valueFrame) -> {
-            for (InternalSession i : sessions.values()) {
-                if (matchesPrincipal(i, ptx.name()) && i.session.state() == DanWebSocketSession.State.READY
+            for (InternalSession i : getPrincipalSessions(ptx.name())) {
+                if (i.session.state() == DanWebSocketSession.State.READY
                         && i.ch != null && i.ch.isActive()) {
                     i.bulkQueue.enqueue(keyFrame);
                     i.bulkQueue.enqueue(syncFrame);
@@ -333,8 +358,8 @@ public class DanWebSocketServer {
             }
         });
         ptx.setOnResync(() -> {
-            for (InternalSession i : sessions.values()) {
-                if (matchesPrincipal(i, ptx.name()) && i.session.connected() && i.ch != null && i.ch.isActive()) {
+            for (InternalSession i : getPrincipalSessions(ptx.name())) {
+                if (i.session.connected() && i.ch != null && i.ch.isActive()) {
                     i.bulkQueue.enqueue(Frame.signal(FrameType.SERVER_RESET));
                     ptx.buildKeyFrames().forEach(f -> i.bulkQueue.enqueue(f));
                 }
@@ -357,7 +382,7 @@ public class DanWebSocketServer {
             existing.session.setEventLoop(ch.eventLoop());
             // Recreate BulkQueue and HeartbeatManager on new EventLoop
             existing.bulkQueue.dispose();
-            existing.bulkQueue = new BulkQueue(ch.eventLoop());
+            existing.bulkQueue = new BulkQueue(ch.eventLoop(), flushIntervalMs);
             existing.session.setEnqueue(f -> existing.bulkQueue.enqueue(f));
             existing.heartbeat.stop();
             existing.heartbeat = new HeartbeatManager(ch.eventLoop());
@@ -380,7 +405,7 @@ public class DanWebSocketServer {
 
         DanWebSocketSession session = new DanWebSocketSession(uuid);
         session.setEventLoop(ch.eventLoop());
-        BulkQueue bulkQueue = new BulkQueue(ch.eventLoop());
+        BulkQueue bulkQueue = new BulkQueue(ch.eventLoop(), flushIntervalMs);
         HeartbeatManager heartbeat = new HeartbeatManager(ch.eventLoop());
 
         InternalSession internal = new InternalSession(session, ch, bulkQueue, heartbeat);
@@ -402,12 +427,13 @@ public class DanWebSocketServer {
     }
 
     private void activateSession(InternalSession internal, String principal) {
+        String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : principal;
+        addToPrincipalIndex(effective, internal);
         if (isTopicMode()) {
             internal.session.bindSessionTX(f -> internal.bulkQueue.enqueue(f));
             for (var cb : onConnection) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
             internal.bulkQueue.enqueue(Frame.signal(FrameType.SERVER_SYNC));
         } else {
-            String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : principal;
             PrincipalTX ptx = getPrincipal(effective);
             internal.session.setTxProviders(ptx::buildKeyFrames, ptx::buildValueFrames);
             for (var cb : onConnection) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
@@ -522,6 +548,10 @@ public class DanWebSocketServer {
         internal.heartbeat.stop();
         internal.bulkQueue.clear();
         internal.ch = null;
+
+        String p = internal.session.principal();
+        String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : p;
+        if (effective != null) removeFromPrincipalIndex(effective, internal);
 
         internal.ttlFuture = workerGroup.next().schedule(() -> {
             sessions.remove(uuid);

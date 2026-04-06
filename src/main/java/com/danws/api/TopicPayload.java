@@ -16,6 +16,7 @@ public class TopicPayload {
     private Consumer<Frame> enqueue;
     private Runnable onResync;
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
+    private final Map<String, String> wirePathCache = new HashMap<>();
 
     public TopicPayload(int index, IntSupplier allocateKeyId) {
         this.index = index;
@@ -118,11 +119,15 @@ public class TopicPayload {
     public void clear(String key) {
         Set<String> flatKeys = flattenedKeys.get(key);
         if (flatKeys != null) {
-            for (String path : flatKeys) entries.remove(path);
+            for (String path : flatKeys) {
+                entries.remove(path);
+                wirePathCache.remove(path);
+            }
             flattenedKeys.remove(key);
             if (onResync != null) onResync.run();
-        } else if (entries.remove(key) != null && onResync != null) {
-            onResync.run();
+        } else if (entries.remove(key) != null) {
+            wirePathCache.remove(key);
+            if (onResync != null) onResync.run();
         }
     }
 
@@ -130,6 +135,7 @@ public class TopicPayload {
         if (!entries.isEmpty()) {
             entries.clear();
             flattenedKeys.clear();
+            wirePathCache.clear();
             if (onResync != null) onResync.run();
         }
     }
@@ -137,7 +143,7 @@ public class TopicPayload {
     List<Frame> buildKeyFrames() {
         List<Frame> frames = new ArrayList<>();
         for (var e : entries.entrySet()) {
-            String wirePath = "t." + index + "." + e.getKey();
+            String wirePath = wirePathCache.computeIfAbsent(e.getKey(), k -> "t." + index + "." + k);
             frames.add(Frame.keyRegistration(e.getValue().keyId(), e.getValue().type(), wirePath));
         }
         return frames;

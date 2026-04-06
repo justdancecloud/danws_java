@@ -18,7 +18,7 @@ import java.util.function.Consumer;
  */
 public class BulkQueue {
 
-    private static final long FLUSH_INTERVAL_MS = 100;
+    private final long flushIntervalMs;
 
     private final EventLoop eventLoop;
     private final List<Frame> queue = new ArrayList<>();
@@ -28,7 +28,12 @@ public class BulkQueue {
     private boolean disposed;
 
     public BulkQueue(EventLoop eventLoop) {
+        this(eventLoop, 100);
+    }
+
+    public BulkQueue(EventLoop eventLoop, long flushIntervalMs) {
         this.eventLoop = eventLoop;
+        this.flushIntervalMs = flushIntervalMs;
     }
 
     public void onFlush(Consumer<byte[]> fn) {
@@ -42,7 +47,7 @@ public class BulkQueue {
     private void doOnFlush(Consumer<byte[]> fn) {
         this.onFlush = fn;
         if (flushTask == null && !disposed) {
-            flushTask = eventLoop.scheduleAtFixedRate(this::flush, FLUSH_INTERVAL_MS, FLUSH_INTERVAL_MS, TimeUnit.MILLISECONDS);
+            flushTask = eventLoop.scheduleAtFixedRate(this::flush, flushIntervalMs, flushIntervalMs, TimeUnit.MILLISECONDS);
         }
     }
 

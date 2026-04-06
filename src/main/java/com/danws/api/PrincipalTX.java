@@ -16,6 +16,7 @@ public class PrincipalTX {
     private Runnable onKeysChanged;
     private TriConsumer<Frame, Frame, Frame> onIncrementalKey;
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
+    private List<Frame> cachedKeyFrames = null;
 
     @FunctionalInterface
     interface TriConsumer<A, B, C> { void accept(A a, B b, C c); }
@@ -68,6 +69,7 @@ public class PrincipalTX {
         if (existing == null) {
             int keyId = registry.registerNew(key, newType);
             store.put(keyId, value);
+            cachedKeyFrames = null;
             if (onIncrementalKey != null) {
                 onIncrementalKey.accept(
                     Frame.keyRegistration(keyId, newType, key),
@@ -134,12 +136,14 @@ public class PrincipalTX {
     }
 
     List<Frame> buildKeyFrames() {
+        if (cachedKeyFrames != null) return cachedKeyFrames;
         List<Frame> frames = new ArrayList<>();
         for (KeyEntry entry : registry.entries()) {
             frames.add(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
         }
         // Always include ServerSync so client transitions from synchronizing to ready
         frames.add(Frame.signal(FrameType.SERVER_SYNC));
+        cachedKeyFrames = frames;
         return frames;
     }
 
@@ -155,6 +159,7 @@ public class PrincipalTX {
     }
 
     private void triggerResync() {
+        cachedKeyFrames = null;
         if (onKeysChanged != null) onKeysChanged.run();
     }
 }
