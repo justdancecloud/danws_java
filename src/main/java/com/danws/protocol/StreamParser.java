@@ -83,15 +83,15 @@ public class StreamParser {
     }
 
     private Frame parseFrame(byte[] body) {
-        if (body.length < 4) {
+        if (body.length < 6) {
             throw new DanWSException("FRAME_PARSE_ERROR", "Frame body too short: " + body.length);
         }
 
         FrameType frameType = FrameType.fromCode(body[0] & 0xFF);
-        int keyId = ((body[1] & 0xFF) << 8) | (body[2] & 0xFF);
-        DataType dataType = DataType.fromCode(body[3] & 0xFF);
+        int keyId = ((body[1] & 0xFF) << 24) | ((body[2] & 0xFF) << 16) | ((body[3] & 0xFF) << 8) | (body[4] & 0xFF);
+        DataType dataType = DataType.fromCode(body[5] & 0xFF);
 
-        byte[] rawPayload = Arrays.copyOfRange(body, 4, body.length);
+        byte[] rawPayload = Arrays.copyOfRange(body, 6, body.length);
 
         Object payload;
         if (frameType == FrameType.SERVER_KEY_REGISTRATION || frameType == FrameType.CLIENT_KEY_REGISTRATION) {

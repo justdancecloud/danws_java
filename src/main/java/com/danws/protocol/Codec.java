@@ -21,12 +21,14 @@ public final class Codec {
             rawPayload = Serializer.serialize(frame.dataType(), frame.payload());
         }
 
-        byte[] rawBody = new byte[4 + rawPayload.length];
+        byte[] rawBody = new byte[6 + rawPayload.length];
         rawBody[0] = (byte) frame.frameType().code();
-        rawBody[1] = (byte) ((frame.keyId() >> 8) & 0xFF);
-        rawBody[2] = (byte) (frame.keyId() & 0xFF);
-        rawBody[3] = (byte) frame.dataType().code();
-        System.arraycopy(rawPayload, 0, rawBody, 4, rawPayload.length);
+        rawBody[1] = (byte) ((frame.keyId() >>> 24) & 0xFF);
+        rawBody[2] = (byte) ((frame.keyId() >>> 16) & 0xFF);
+        rawBody[3] = (byte) ((frame.keyId() >>> 8) & 0xFF);
+        rawBody[4] = (byte) (frame.keyId() & 0xFF);
+        rawBody[5] = (byte) frame.dataType().code();
+        System.arraycopy(rawPayload, 0, rawBody, 6, rawPayload.length);
 
         byte[] escapedBody = DLE.encode(rawBody);
 
@@ -80,12 +82,12 @@ public final class Codec {
             if (bodyEnd == -1) throw new DanWSException("FRAME_PARSE_ERROR", "Missing DLE ETX");
 
             byte[] body = DLE.decode(Arrays.copyOfRange(bytes, bodyStart, bodyEnd));
-            if (body.length < 4) throw new DanWSException("FRAME_PARSE_ERROR", "Frame body too short: " + body.length);
+            if (body.length < 6) throw new DanWSException("FRAME_PARSE_ERROR", "Frame body too short: " + body.length);
 
             FrameType frameType = FrameType.fromCode(body[0] & 0xFF);
-            int keyId = ((body[1] & 0xFF) << 8) | (body[2] & 0xFF);
-            DataType dataType = DataType.fromCode(body[3] & 0xFF);
-            byte[] rawPayload = Arrays.copyOfRange(body, 4, body.length);
+            int keyId = ((body[1] & 0xFF) << 24) | ((body[2] & 0xFF) << 16) | ((body[3] & 0xFF) << 8) | (body[4] & 0xFF);
+            DataType dataType = DataType.fromCode(body[5] & 0xFF);
+            byte[] rawPayload = Arrays.copyOfRange(body, 6, body.length);
 
             Object payload;
             if (isKeyRegistrationFrame(frameType)) {

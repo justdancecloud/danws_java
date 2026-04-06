@@ -15,6 +15,7 @@ public class TopicPayload {
     private final IntSupplier allocateKeyId;
     private Consumer<Frame> enqueue;
     private Runnable onResync;
+    private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
 
     public TopicPayload(int index, IntSupplier allocateKeyId) {
         this.index = index;
@@ -27,6 +28,54 @@ public class TopicPayload {
     }
 
     public void set(String key, Object value) {
+        if (Flatten.shouldFlatten(value)) {
+            Map<String, Object> flattened = Flatten.flatten(key, value);
+            Set<String> newKeys = flattened.keySet();
+            Set<String> oldKeys = flattenedKeys.get(key);
+            if (oldKeys != null) {
+                for (String oldPath : oldKeys) {
+                    if (!newKeys.contains(oldPath)) entries.remove(oldPath);
+                }
+            }
+            flattenedKeys.put(key, new HashSet<>(newKeys));
+            boolean needsResync = false;
+            for (var entry : flattened.entrySet()) {
+                if (setLeafInternal(entry.getKey(), entry.getValue())) needsResync = true;
+            }
+            if (needsResync && onResync != null) onResync.run();
+            return;
+        }
+        setLeafDirect(key, value);
+    }
+
+    /** Set leaf, return true if resync needed. */
+    private boolean setLeafInternal(String key, Object value) {
+        com.danws.state.KeyRegistry.validateKeyPath(key);
+        DataType newType = DataType.detect(value);
+        Serializer.serialize(newType, value);
+
+        Entry existing = entries.get(key);
+
+        if (existing == null) {
+            entries.put(key, new Entry(allocateKeyId.getAsInt(), newType, value));
+            return true;
+        }
+
+        if (existing.type() != newType) {
+            entries.put(key, new Entry(existing.keyId(), newType, value));
+            return true;
+        }
+
+        if (Objects.equals(existing.value(), value)) return false;
+
+        entries.put(key, new Entry(existing.keyId(), existing.type(), value));
+        if (enqueue != null) {
+            enqueue.accept(Frame.value(existing.keyId(), existing.type(), value));
+        }
+        return false;
+    }
+
+    private void setLeafDirect(String key, Object value) {
         com.danws.state.KeyRegistry.validateKeyPath(key);
         DataType newType = DataType.detect(value);
         Serializer.serialize(newType, value);
@@ -63,12 +112,20 @@ public class TopicPayload {
     }
 
     public void clear(String key) {
-        if (entries.remove(key) != null && onResync != null) onResync.run();
+        Set<String> flatKeys = flattenedKeys.get(key);
+        if (flatKeys != null) {
+            for (String path : flatKeys) entries.remove(path);
+            flattenedKeys.remove(key);
+            if (onResync != null) onResync.run();
+        } else if (entries.remove(key) != null && onResync != null) {
+            onResync.run();
+        }
     }
 
     public void clear() {
         if (!entries.isEmpty()) {
             entries.clear();
+            flattenedKeys.clear();
             if (onResync != null) onResync.run();
         }
     }

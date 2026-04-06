@@ -14,6 +14,7 @@ public class PrincipalTX {
     private final Map<Integer, Object> store = new ConcurrentHashMap<>();
     private Consumer<Frame> onValueSet;
     private Runnable onKeysChanged;
+    private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
 
     public PrincipalTX(String name) {
         this.name = name;
@@ -25,9 +26,37 @@ public class PrincipalTX {
     void setOnResync(Runnable fn) { this.onKeysChanged = fn; }
 
     public void set(String key, Object value) {
+        if (Flatten.shouldFlatten(value)) {
+            Map<String, Object> flattened = Flatten.flatten(key, value);
+            Set<String> newKeys = flattened.keySet();
+            Set<String> oldKeys = flattenedKeys.get(key);
+            if (oldKeys != null) {
+                for (String oldPath : oldKeys) {
+                    if (!newKeys.contains(oldPath)) clearLeaf(oldPath);
+                }
+            }
+            flattenedKeys.put(key, new HashSet<>(newKeys));
+            for (var entry : flattened.entrySet()) {
+                setLeaf(entry.getKey(), entry.getValue());
+            }
+            return;
+        }
+        setLeaf(key, value);
+    }
+
+    private void clearLeaf(String path) {
+        KeyEntry entry = registry.getByPath(path);
+        if (entry != null) {
+            registry.remove(path);
+            store.remove(entry.keyId());
+            triggerResync();
+        }
+    }
+
+    private void setLeaf(String key, Object value) {
         KeyRegistry.validateKeyPath(key);
         DataType newType = DataType.detect(value);
-        Serializer.serialize(newType, value); // validate
+        Serializer.serialize(newType, value);
 
         KeyEntry existing = registry.getByPath(key);
 
@@ -65,11 +94,18 @@ public class PrincipalTX {
     }
 
     public void clear(String key) {
-        KeyEntry entry = registry.getByPath(key);
-        if (entry != null) {
-            registry.remove(key);
-            store.remove(entry.keyId());
+        Set<String> flatKeys = flattenedKeys.get(key);
+        if (flatKeys != null) {
+            for (String path : flatKeys) clearLeaf(path);
+            flattenedKeys.remove(key);
             triggerResync();
+        } else {
+            KeyEntry entry = registry.getByPath(key);
+            if (entry != null) {
+                registry.remove(key);
+                store.remove(entry.keyId());
+                triggerResync();
+            }
         }
     }
 
@@ -77,6 +113,7 @@ public class PrincipalTX {
         if (registry.size() > 0) {
             registry.clear();
             store.clear();
+            flattenedKeys.clear();
             triggerResync();
         }
     }

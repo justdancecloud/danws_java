@@ -34,6 +34,7 @@ public class DanWebSocketSession {
     private int nextKeyId = 1; // global keyId counter — shared by flat session keys and all topic payloads
     private Consumer<Frame> sessionEnqueue;
     private boolean sessionBound;
+    private final Map<String, Set<String>> flattenedKeys = new java.util.HashMap<>();
 
     // Topic handles
     private final Map<String, TopicHandle> topicHandles = new LinkedHashMap<>();
@@ -71,6 +72,29 @@ public class DanWebSocketSession {
         if (!sessionBound) {
             throw new DanWSException("INVALID_MODE", "session.set() is only available in topic modes.");
         }
+        if (Flatten.shouldFlatten(value)) {
+            Map<String, Object> flattened = Flatten.flatten(key, value);
+            Set<String> newKeys = flattened.keySet();
+            Set<String> oldKeys = flattenedKeys.get(key);
+            if (oldKeys != null) {
+                for (String oldPath : oldKeys) {
+                    if (!newKeys.contains(oldPath)) {
+                        KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(oldPath);
+                        if (entry != null) { sessionRegistry.remove(oldPath); sessionStore.remove(entry.keyId()); }
+                    }
+                }
+            }
+            flattenedKeys.put(key, new java.util.HashSet<>(newKeys));
+            for (var entry : flattened.entrySet()) {
+                setLeaf(entry.getKey(), entry.getValue());
+            }
+            triggerSessionResync();
+            return;
+        }
+        setLeaf(key, value);
+    }
+
+    private void setLeaf(String key, Object value) {
         KeyRegistry.validateKeyPath(key);
         DataType newType = DataType.detect(value);
         Serializer.serialize(newType, value);

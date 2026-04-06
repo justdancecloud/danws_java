@@ -15,11 +15,14 @@ class CodecTest {
         return sb.toString();
     }
 
+    // Frame body: [FrameType:1][KeyID:4][DataType:1][Payload:N]
+
     @Test
     void serverKeyRegistration() {
         Frame frame = Frame.keyRegistration(0x0001, DataType.BOOL, "root.status.alive");
         byte[] bytes = Codec.encode(frame);
-        String expected = "10 02 00 00 01 01 72 6f 6f 74 2e 73 74 61 74 75 73 2e 61 6c 69 76 65 10 03";
+        // DLE STX | FT=0x00 KeyID=0x00000001 DT=0x01 | payload | DLE ETX
+        String expected = "10 02 00 00 00 00 01 01 72 6f 6f 74 2e 73 74 61 74 75 73 2e 61 6c 69 76 65 10 03";
         assertEquals(expected, hex(bytes));
     }
 
@@ -27,14 +30,14 @@ class CodecTest {
     void serverValueBool() {
         Frame frame = Frame.value(0x0001, DataType.BOOL, true);
         byte[] bytes = Codec.encode(frame);
-        assertEquals("10 02 01 00 01 01 01 10 03", hex(bytes));
+        assertEquals("10 02 01 00 00 00 01 01 01 10 03", hex(bytes));
     }
 
     @Test
     void serverValueString() {
         Frame frame = Frame.value(0x0002, DataType.STRING, "Alice");
         byte[] bytes = Codec.encode(frame);
-        assertEquals("10 02 01 00 02 0a 41 6c 69 63 65 10 03", hex(bytes));
+        assertEquals("10 02 01 00 00 00 02 0a 41 6c 69 63 65 10 03", hex(bytes));
     }
 
     @Test
@@ -48,11 +51,12 @@ class CodecTest {
 
     @Test
     void signalFrames() {
-        assertEquals("10 02 04 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.SERVER_SYNC))));
-        assertEquals("10 02 05 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.CLIENT_READY))));
-        assertEquals("10 02 09 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.SERVER_RESET))));
-        assertEquals("10 02 0a 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.CLIENT_RESYNC_REQ))));
-        assertEquals("10 02 0f 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.AUTH_OK))));
+        // Signal: [DLE STX] [FT] [0x00 0x00 0x00 0x00] [0x00] [DLE ETX]
+        assertEquals("10 02 04 00 00 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.SERVER_SYNC))));
+        assertEquals("10 02 05 00 00 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.CLIENT_READY))));
+        assertEquals("10 02 09 00 00 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.SERVER_RESET))));
+        assertEquals("10 02 0a 00 00 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.CLIENT_RESYNC_REQ))));
+        assertEquals("10 02 0f 00 00 00 00 00 10 03", hex(Codec.encode(Frame.signal(FrameType.AUTH_OK))));
     }
 
     @Test
@@ -62,7 +66,6 @@ class CodecTest {
 
     @Test
     void dleEscapingInPayload() {
-        // String containing 0x10
         Frame frame = Frame.value(0x0001, DataType.STRING, "A\u0010B");
         byte[] encoded = Codec.encode(frame);
         List<Frame> decoded = Codec.decode(encoded);
@@ -71,12 +74,21 @@ class CodecTest {
 
     @Test
     void dleEscapingInKeyId() {
-        // KeyID 0x0010 — the low byte is 0x10
+        // KeyID 0x0010 — one of the 4 bytes is 0x10
         Frame frame = Frame.value(0x0010, DataType.BOOL, true);
         byte[] encoded = Codec.encode(frame);
         List<Frame> decoded = Codec.decode(encoded);
         assertEquals(0x0010, decoded.get(0).keyId());
         assertEquals(true, decoded.get(0).payload());
+    }
+
+    @Test
+    void largeKeyId() {
+        // Test 4-byte keyId range
+        Frame frame = Frame.value(0x00ABCDEF, DataType.BOOL, true);
+        byte[] encoded = Codec.encode(frame);
+        List<Frame> decoded = Codec.decode(encoded);
+        assertEquals(0x00ABCDEF, decoded.get(0).keyId());
     }
 
     @Test
