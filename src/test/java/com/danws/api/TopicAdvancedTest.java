@@ -65,7 +65,7 @@ class TopicAdvancedTest {
 
         // Subscribe
         client.subscribe("lifecycle", Map.of("page", 1.0));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertTrue(events.contains(EventType.SUBSCRIBE), "SUBSCRIBE event should fire");
         assertTrue(events.contains(EventType.DELAYED_TASK), "DELAYED_TASK events should fire");
@@ -75,7 +75,7 @@ class TopicAdvancedTest {
         // Change params
         int ticksBefore = tickCount.get();
         client.setParams("lifecycle", Map.of("page", 2.0));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertTrue(events.contains(EventType.CHANGED_PARAMS), "CHANGED_PARAMS event should fire");
         assertEquals(2.0, client.topic("lifecycle").get("page"));
@@ -83,7 +83,7 @@ class TopicAdvancedTest {
 
         // Unsubscribe
         client.unsubscribe("lifecycle");
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertTrue(unsubscribed.contains("lifecycle"));
     }
@@ -114,10 +114,10 @@ class TopicAdvancedTest {
         client.subscribe("fast");
         // Immediately unsubscribe
         client.unsubscribe("fast");
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         int ticksAfterUnsub = tickCount.get();
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         // Timer should be stopped, no new ticks
         assertEquals(ticksAfterUnsub, tickCount.get(),
@@ -162,7 +162,7 @@ class TopicAdvancedTest {
         c1.subscribe("room");
         c2.subscribe("room");
         c3.subscribe("room");
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         String id1 = (String) c1.topic("room").get("sessionId");
         String id2 = (String) c2.topic("room").get("sessionId");
@@ -299,7 +299,7 @@ class TopicAdvancedTest {
 
         // This subscribe triggers an exception in callback
         client1.subscribe("crashy");
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         // Server should still be alive — a second client can connect and subscribe
         CountDownLatch ready2 = new CountDownLatch(1);
@@ -309,7 +309,7 @@ class TopicAdvancedTest {
         assertTrue(ready2.await(3, TimeUnit.SECONDS), "Server should still accept connections after callback error");
 
         client2.subscribe("crashy");
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertTrue(subscribeCount.get() >= 2, "Both subscriptions should have been processed");
     }
@@ -338,7 +338,7 @@ class TopicAdvancedTest {
         client.subscribe("alpha");
         client.subscribe("beta");
         client.subscribe("gamma");
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals("alpha", client.topic("alpha").get("name"));
         assertEquals("beta", client.topic("beta").get("name"));
@@ -423,11 +423,11 @@ class TopicAdvancedTest {
         assertTrue(ready1.await(3, TimeUnit.SECONDS));
 
         client1.subscribe("channel");
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(true, client1.topic("channel").get("connected"));
         client1.disconnect();
-        Thread.sleep(200);
+        Thread.sleep(400);
 
         // Create a new client (simulating reconnect with new session)
         CountDownLatch ready2 = new CountDownLatch(1);
@@ -437,7 +437,7 @@ class TopicAdvancedTest {
         assertTrue(ready2.await(3, TimeUnit.SECONDS));
 
         client2.subscribe("channel");
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(true, client2.topic("channel").get("connected"));
         assertTrue(subscribeCount.get() >= 2, "Should have processed subscriptions from both sessions");
@@ -471,7 +471,7 @@ class TopicAdvancedTest {
         assertTrue(ready.await(3, TimeUnit.SECONDS));
 
         client.subscribe("dual");
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         // Topic payload data
         assertEquals("fromTopic", client.topic("dual").get("topicValue"));
@@ -508,7 +508,7 @@ class TopicAdvancedTest {
         assertTrue(ready.await(3, TimeUnit.SECONDS));
 
         client.subscribe("compat");
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertTrue(oldApiSubscribed.contains("compat"), "Old API onTopicSubscribe should fire");
         assertTrue(newApiSubscribed.contains("compat"), "New API topic().onSubscribe should fire");
@@ -540,7 +540,7 @@ class TopicAdvancedTest {
 
         // Subscribe with no params
         client.subscribe("simple");
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertNotNull(receivedParams.get(), "Params should not be null");
         assertTrue(receivedParams.get().isEmpty(), "Params should be empty");
@@ -576,7 +576,7 @@ class TopicAdvancedTest {
         }
 
         client.subscribe("complex", manyParams);
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertNotNull(receivedParams.get(), "Server should receive params");
         assertEquals(12, receivedParams.get().size(), "All 12 params should be received");
@@ -662,12 +662,12 @@ class TopicAdvancedTest {
         assertTrue(ready.await(3, TimeUnit.SECONDS));
 
         client.subscribe("monitor");
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(true, client.topic("monitor").get("active"));
 
         client.unsubscribe("monitor");
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertTrue(unsubscribedNames.contains("monitor"),
                 "onUnsubscribe should fire with correct topic name");

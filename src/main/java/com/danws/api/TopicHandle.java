@@ -1,10 +1,15 @@
 package com.danws.api;
 
 import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.concurrent.*;
 
 public class TopicHandle {
+
+    private static final ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(2, r -> {
+        Thread t = new Thread(r, "danws-topic-task");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final String name;
     private Map<String, Object> params;
@@ -12,7 +17,7 @@ public class TopicHandle {
     private final DanWebSocketSession session;
 
     private TopicCallback callback;
-    private Timer timer;
+    private ScheduledFuture<?> timerFuture;
     private long delayMs;
 
     public TopicHandle(String name, Map<String, Object> params, TopicPayload payload, DanWebSocketSession session) {
@@ -34,26 +39,23 @@ public class TopicHandle {
     public void setDelayedTask(long ms) {
         clearDelayedTask();
         this.delayMs = ms;
-        timer = new Timer(true);
-        timer.scheduleAtFixedRate(new TimerTask() {
-            @Override public void run() {
-                if (callback != null) {
-                    try { callback.accept(EventType.DELAYED_TASK, TopicHandle.this, session); } catch (Exception ignored) {}
-                }
+        timerFuture = SCHEDULER.scheduleAtFixedRate(() -> {
+            if (callback != null) {
+                try { callback.accept(EventType.DELAYED_TASK, TopicHandle.this, session); } catch (Exception ignored) {}
             }
-        }, ms, ms);
+        }, ms, ms, TimeUnit.MILLISECONDS);
     }
 
     public void clearDelayedTask() {
-        if (timer != null) {
-            timer.cancel();
-            timer = null;
+        if (timerFuture != null) {
+            timerFuture.cancel(false);
+            timerFuture = null;
         }
     }
 
     void updateParams(Map<String, Object> newParams) {
         this.params = newParams;
-        boolean hadTimer = timer != null;
+        boolean hadTimer = timerFuture != null;
         long savedMs = delayMs;
 
         clearDelayedTask();

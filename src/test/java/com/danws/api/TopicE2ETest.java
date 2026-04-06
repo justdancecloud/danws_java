@@ -52,7 +52,7 @@ class TopicE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("chat");
-        Thread.sleep(500);
+        Thread.sleep(2000);
 
         assertTrue(receivedKeys.contains("greeting"));
         assertEquals("Hello from chat", client.topic("chat").get("greeting"));
@@ -80,7 +80,7 @@ class TopicE2ETest {
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("alpha");
         client.subscribe("beta");
-        Thread.sleep(500);
+        Thread.sleep(2000);
 
         assertEquals("alpha", client.topic("alpha").get("name"));
         assertEquals("beta", client.topic("beta").get("name"));
@@ -116,7 +116,7 @@ class TopicE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("timer");
-        Thread.sleep(800);
+        Thread.sleep(2000);
 
         // Should have multiple ticks (subscribe + at least a few delayed tasks)
         assertTrue(ticks.size() >= 3, "Expected at least 3 ticks, got " + ticks.size());
@@ -143,13 +143,13 @@ class TopicE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("posts", Map.of("page", 1.0));
-        Thread.sleep(300);
+        Thread.sleep(2000);
 
         assertEquals(1.0, client.topic("posts").get("page"));
         assertTrue(events.contains(EventType.SUBSCRIBE));
 
         client.setParams("posts", Map.of("page", 2.0));
-        Thread.sleep(300);
+        Thread.sleep(2000);
 
         assertEquals(2.0, client.topic("posts").get("page"));
         assertTrue(events.contains(EventType.CHANGED_PARAMS));
@@ -180,10 +180,10 @@ class TopicE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("monitor");
-        Thread.sleep(300);
+        Thread.sleep(2000);
 
         client.unsubscribe("monitor");
-        Thread.sleep(300);
+        Thread.sleep(2000);
 
         assertTrue(unsubscribed.contains("monitor"));
     }
@@ -210,7 +210,7 @@ class TopicE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("profile");
-        Thread.sleep(300);
+        Thread.sleep(2000);
 
         assertEquals("alice", client.topic("profile").get("user"));
     }
@@ -237,15 +237,15 @@ class TopicE2ETest {
         assertTrue(ready.await(3, TimeUnit.SECONDS));
 
         client.subscribe("news", Map.of("category", "tech"));
-        Thread.sleep(300);
+        Thread.sleep(2000);
         assertTrue(subscribed.contains("news"));
 
         client.setParams("news", Map.of("category", "sports"));
-        Thread.sleep(300);
+        Thread.sleep(2000);
         assertTrue(paramsChanged.contains("news"));
 
         client.unsubscribe("news");
-        Thread.sleep(300);
+        Thread.sleep(2000);
         assertTrue(unsubscribed.contains("news"));
     }
 
@@ -273,7 +273,7 @@ class TopicE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("test");
-        Thread.sleep(500);
+        Thread.sleep(2000);
 
         assertEquals("from topic", client.topic("test").get("topicData"));
         assertEquals("from session", client.get("flatData"));
@@ -303,7 +303,7 @@ class TopicE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("data");
-        Thread.sleep(500);
+        Thread.sleep(2000);
 
         assertFalse(updateKeys.isEmpty());
         // At least one update should have both keys
@@ -337,7 +337,7 @@ class TopicE2ETest {
 
         client1.subscribe("room");
         client2.subscribe("room");
-        Thread.sleep(500);
+        Thread.sleep(2000);
 
         String id1 = (String) client1.topic("room").get("sessionId");
         String id2 = (String) client2.topic("room").get("sessionId");

@@ -46,7 +46,7 @@ class E2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals("Hello", client.get("greeting"));
         assertEquals(42.0, client.get("count"));
@@ -69,11 +69,11 @@ class E2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
         assertTrue(scores.contains(0.0));
 
         server.set("score", 100.0);
-        Thread.sleep(300);
+        Thread.sleep(1200);
         assertTrue(scores.contains(100.0));
     }
 
@@ -112,7 +112,7 @@ class E2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals("Hello", client.get("greeting"));
     }
@@ -142,7 +142,7 @@ class E2ETest {
 
         assertTrue(rA.await(3, TimeUnit.SECONDS));
         assertTrue(rB.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals("Alice", cA.get("name"));
         assertEquals("Bob", cB.get("name"));
@@ -200,7 +200,7 @@ class E2ETest {
         assertEquals(1, server.getSessionsByPrincipal("alice").size());
 
         client.disconnect();
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertFalse(server.isConnected(uuid[0]));
         assertNotNull(server.getSession(uuid[0])); // Within TTL

@@ -1,13 +1,20 @@
 package com.danws.api;
 
+import com.danws.connection.BulkQueue;
+import com.danws.connection.HeartbeatManager;
 import com.danws.protocol.*;
 import com.danws.state.KeyRegistry;
-import org.java_websocket.WebSocket;
-import org.java_websocket.handshake.ClientHandshake;
-import org.java_websocket.server.WebSocketServer;
 
-import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.*;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.websocketx.*;
+
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
@@ -24,15 +31,19 @@ public class DanWebSocketServer {
     private static final Pattern TOPIC_PARAM_PATTERN = Pattern.compile("^topic\\.(\\d+)\\.param\\.(.+)$");
 
     private final Mode mode;
-    private final WebSocketServer wss;
     private final long ttl;
+    private final String path;
     private boolean authEnabled;
     private long authTimeout = 5000;
+
+    private final EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+    private final EventLoopGroup workerGroup = new NioEventLoopGroup();
+    private Channel serverChannel;
 
     private final Map<String, PrincipalTX> principals = new ConcurrentHashMap<>();
     private final Map<String, InternalSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, InternalSession> tmpSessions = new ConcurrentHashMap<>();
-    private final Map<WebSocket, String> wsToUuid = new ConcurrentHashMap<>();
+    private final Map<ChannelId, String> chToUuid = new ConcurrentHashMap<>();
 
     private final List<Consumer<DanWebSocketSession>> onConnection = new ArrayList<>();
     private final List<BiConsumer<String, String>> onAuthorize = new ArrayList<>();
@@ -41,28 +52,35 @@ public class DanWebSocketServer {
     private final List<BiConsumer<DanWebSocketSession, String>> onTopicUnsubscribe = new ArrayList<>();
     private final List<BiConsumer<DanWebSocketSession, TopicInfo>> onTopicParamsChange = new ArrayList<>();
 
-    // Topic namespace
     private final TopicNamespace topicNamespace = new TopicNamespace();
 
     public DanWebSocketServer(int port, String path, Mode mode, long ttlMs) {
         this.mode = (mode == Mode.INDIVIDUAL) ? Mode.PRINCIPAL : mode;
         this.ttl = ttlMs;
+        this.path = path;
 
-        wss = new WebSocketServer(new InetSocketAddress(port)) {
-            @Override public void onOpen(WebSocket conn, ClientHandshake handshake) {}
-            @Override public void onClose(WebSocket conn, int code, String reason, boolean remote) {
-                String uuid = wsToUuid.remove(conn);
-                if (uuid != null) handleSessionDisconnect(uuid);
-            }
-            @Override public void onMessage(WebSocket conn, String message) {}
-            @Override public void onMessage(WebSocket conn, ByteBuffer message) {
-                handleMessage(conn, message);
-            }
-            @Override public void onError(WebSocket conn, Exception ex) {}
-            @Override public void onStart() {}
-        };
-        wss.setReuseAddr(true);
-        wss.start();
+        try {
+            ServerBootstrap b = new ServerBootstrap();
+            b.group(bossGroup, workerGroup)
+             .channel(NioServerSocketChannel.class)
+             .option(ChannelOption.SO_BACKLOG, 10000)
+             .childOption(ChannelOption.SO_KEEPALIVE, true)
+             .childOption(ChannelOption.TCP_NODELAY, true)
+             .childHandler(new ChannelInitializer<SocketChannel>() {
+                 @Override
+                 protected void initChannel(SocketChannel ch) {
+                     ch.pipeline().addLast(
+                         new HttpServerCodec(),
+                         new HttpObjectAggregator(65536),
+                         new WebSocketServerProtocolHandler(DanWebSocketServer.this.path, null, true, 65536),
+                         new ServerFrameHandler()
+                     );
+                 }
+             });
+            serverChannel = b.bind(port).sync().channel();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public DanWebSocketServer(int port, Mode mode) {
@@ -137,7 +155,7 @@ public class DanWebSocketServer {
         if (internal == null) return;
 
         internal.session.authorize(principal);
-        sendFrame(internal, Frame.signal(FrameType.AUTH_OK));
+        internal.bulkQueue.enqueue(Frame.signal(FrameType.AUTH_OK));
         sessions.put(clientUuid, internal);
         activateSession(internal, principal);
     }
@@ -145,10 +163,11 @@ public class DanWebSocketServer {
     public void reject(String clientUuid, String reason) {
         InternalSession internal = tmpSessions.remove(clientUuid);
         if (internal == null) return;
-        sendFrame(internal, new Frame(FrameType.AUTH_FAIL, 0, DataType.STRING, reason != null ? reason : "Rejected"));
-        if (internal.ws != null) {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-            internal.ws.close();
+        // Send AUTH_FAIL directly (bypass BulkQueue to ensure delivery before close)
+        byte[] encoded = Codec.encode(new Frame(FrameType.AUTH_FAIL, 0, DataType.STRING, reason != null ? reason : "Rejected"));
+        sendBytes(internal.ch, encoded);
+        if (internal.ch != null) {
+            internal.ch.eventLoop().schedule(() -> internal.ch.close(), 100, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -174,12 +193,20 @@ public class DanWebSocketServer {
         for (InternalSession i : sessions.values()) {
             i.session.disposeAllTopicHandles();
             i.session.handleDisconnect();
+            i.heartbeat.stop();
+            i.bulkQueue.dispose();
             if (i.ttlFuture != null) i.ttlFuture.cancel(false);
-            if (i.ws != null && i.ws.isOpen()) { try { i.ws.close(1001, "Server shutting down"); } catch (Exception ignored) {} }
+            if (i.ch != null && i.ch.isActive()) {
+                try { i.ch.close(); } catch (Exception ignored) {}
+            }
         }
         sessions.clear();
         tmpSessions.clear();
-        try { wss.stop(500); } catch (InterruptedException ignored) {}
+        try {
+            if (serverChannel != null) serverChannel.close().sync();
+            bossGroup.shutdownGracefully(0, 100, TimeUnit.MILLISECONDS).sync();
+            workerGroup.shutdownGracefully(0, 100, TimeUnit.MILLISECONDS).sync();
+        } catch (InterruptedException ignored) {}
     }
 
     // ---- Event registration ----
@@ -191,7 +218,92 @@ public class DanWebSocketServer {
     public void onTopicUnsubscribe(BiConsumer<DanWebSocketSession, String> cb) { onTopicUnsubscribe.add(cb); }
     public void onTopicParamsChange(BiConsumer<DanWebSocketSession, TopicInfo> cb) { onTopicParamsChange.add(cb); }
 
-    // ---- Internal ----
+    // ──── Netty WebSocket Handler ────
+
+    private class ServerFrameHandler extends SimpleChannelInboundHandler<WebSocketFrame> {
+
+        private final StreamParser parser = new StreamParser();
+        private boolean identified = false;
+        private String clientUuid = "";
+
+        @Override
+        public void handlerAdded(ChannelHandlerContext ctx) {
+            parser.onHeartbeat(() -> {
+                InternalSession internal = getInternal(clientUuid);
+                if (internal != null) {
+                    internal.heartbeat.received();
+                    sendBytes(ctx.channel(), Codec.encodeHeartbeat());
+                }
+            });
+
+            parser.onFrame(frame -> {
+                if (!identified) {
+                    if (frame.frameType() != FrameType.IDENTIFY) { ctx.close(); return; }
+                    if (!(frame.payload() instanceof byte[] payload) || payload.length != 16) { ctx.close(); return; }
+                    clientUuid = bytesToUuid(payload);
+                    chToUuid.put(ctx.channel().id(), clientUuid);
+                    identified = true;
+                    handleIdentified(ctx.channel(), clientUuid);
+                    return;
+                }
+
+                if (frame.frameType() == FrameType.AUTH) {
+                    InternalSession tmp = tmpSessions.get(clientUuid);
+                    if (tmp != null && authEnabled) {
+                        String token = (String) frame.payload();
+                        for (var cb : onAuthorize) { try { cb.accept(clientUuid, token); } catch (Exception ignored) {} }
+                    }
+                    return;
+                }
+
+                if (isTopicMode()) {
+                    InternalSession internal = sessions.get(clientUuid);
+                    if (internal != null) {
+                        FrameType ft = frame.frameType();
+                        if (ft == FrameType.CLIENT_RESET || ft == FrameType.CLIENT_KEY_REGISTRATION
+                                || ft == FrameType.CLIENT_VALUE || ft == FrameType.CLIENT_SYNC) {
+                            handleClientTopicFrame(internal, frame);
+                            return;
+                        }
+                    }
+                }
+
+                InternalSession internal = sessions.get(clientUuid);
+                if (internal != null) internal.session.handleFrame(frame);
+            });
+
+            parser.onError(e -> {});
+        }
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, WebSocketFrame msg) {
+            if (msg instanceof BinaryWebSocketFrame binaryFrame) {
+                ByteBuf content = binaryFrame.content();
+                byte[] bytes = new byte[content.readableBytes()];
+                content.readBytes(bytes);
+                parser.feed(bytes);
+            }
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+            String uuid = chToUuid.remove(ctx.channel().id());
+            if (uuid != null) handleSessionDisconnect(uuid);
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            ctx.close();
+        }
+    }
+
+    // ──── Internal ────
+
+    private InternalSession getInternal(String uuid) {
+        InternalSession i = sessions.get(uuid);
+        if (i != null) return i;
+        return tmpSessions.get(uuid);
+    }
 
     private PrincipalTX getPrincipal(String name) {
         return principals.computeIfAbsent(name, n -> {
@@ -205,26 +317,26 @@ public class DanWebSocketServer {
         ptx.setOnValue(frame -> {
             for (InternalSession i : sessions.values()) {
                 if (matchesPrincipal(i, ptx.name()) && i.session.state() == DanWebSocketSession.State.READY
-                        && i.ws != null && i.ws.isOpen()) {
-                    sendFrame(i, frame);
+                        && i.ch != null && i.ch.isActive()) {
+                    i.bulkQueue.enqueue(frame);
                 }
             }
         });
         ptx.setOnIncremental((keyFrame, syncFrame, valueFrame) -> {
             for (InternalSession i : sessions.values()) {
                 if (matchesPrincipal(i, ptx.name()) && i.session.state() == DanWebSocketSession.State.READY
-                        && i.ws != null && i.ws.isOpen()) {
-                    sendFrame(i, keyFrame);
-                    sendFrame(i, syncFrame);
-                    sendFrame(i, valueFrame);
+                        && i.ch != null && i.ch.isActive()) {
+                    i.bulkQueue.enqueue(keyFrame);
+                    i.bulkQueue.enqueue(syncFrame);
+                    i.bulkQueue.enqueue(valueFrame);
                 }
             }
         });
         ptx.setOnResync(() -> {
             for (InternalSession i : sessions.values()) {
-                if (matchesPrincipal(i, ptx.name()) && i.session.connected() && i.ws != null && i.ws.isOpen()) {
-                    sendFrame(i, Frame.signal(FrameType.SERVER_RESET));
-                    ptx.buildKeyFrames().forEach(f -> sendFrame(i, f));
+                if (matchesPrincipal(i, ptx.name()) && i.session.connected() && i.ch != null && i.ch.isActive()) {
+                    i.bulkQueue.enqueue(Frame.signal(FrameType.SERVER_RESET));
+                    ptx.buildKeyFrames().forEach(f -> i.bulkQueue.enqueue(f));
                 }
             }
         });
@@ -235,67 +347,15 @@ public class DanWebSocketServer {
         return Objects.equals(i.session.principal(), principalName);
     }
 
-    private void handleMessage(WebSocket conn, ByteBuffer message) {
-        byte[] bytes = new byte[message.remaining()];
-        message.get(bytes);
-
-        StreamParser parser = new StreamParser();
-        parser.onHeartbeat(() -> {
-            if (conn.isOpen()) conn.send(ByteBuffer.wrap(Codec.encodeHeartbeat()));
-        });
-
-        parser.onFrame(frame -> {
-            String uuid = wsToUuid.get(conn);
-
-            if (uuid == null) {
-                if (frame.frameType() != FrameType.IDENTIFY) { conn.close(); return; }
-                if (!(frame.payload() instanceof byte[] payload) || payload.length != 16) { conn.close(); return; }
-
-                uuid = bytesToUuid(payload);
-                wsToUuid.put(conn, uuid);
-                handleIdentified(conn, uuid);
-                return;
-            }
-
-            // AUTH frame
-            if (frame.frameType() == FrameType.AUTH) {
-                InternalSession tmp = tmpSessions.get(uuid);
-                if (tmp != null && authEnabled) {
-                    String token = (String) frame.payload();
-                    for (var cb : onAuthorize) { try { cb.accept(uuid, token); } catch (Exception ignored) {} }
-                }
-                return;
-            }
-
-            // Client topic frames (topic modes)
-            if (isTopicMode()) {
-                InternalSession internal = sessions.get(uuid);
-                if (internal != null) {
-                    FrameType ft = frame.frameType();
-                    if (ft == FrameType.CLIENT_RESET || ft == FrameType.CLIENT_KEY_REGISTRATION
-                            || ft == FrameType.CLIENT_VALUE || ft == FrameType.CLIENT_SYNC) {
-                        handleClientTopicFrame(internal, frame);
-                        return;
-                    }
-                }
-            }
-
-            // Route to session
-            InternalSession internal = sessions.get(uuid);
-            if (internal != null) internal.session.handleFrame(frame);
-        });
-
-        parser.onError(e -> {});
-        parser.feed(bytes);
-    }
-
-    private void handleIdentified(WebSocket conn, String uuid) {
+    private void handleIdentified(Channel ch, String uuid) {
         InternalSession existing = sessions.get(uuid);
         if (existing != null) {
-            if (existing.ws != null && existing.ws.isOpen()) existing.ws.close();
+            if (existing.ch != null && existing.ch.isActive()) existing.ch.close();
             if (existing.ttlFuture != null) { existing.ttlFuture.cancel(false); existing.ttlFuture = null; }
-            existing.ws = conn;
+            existing.ch = ch;
             existing.session.handleReconnect();
+            existing.heartbeat.start();
+            existing.bulkQueue.onFlush(data -> sendBytes(ch, data));
 
             if (authEnabled) {
                 tmpSessions.put(uuid, existing);
@@ -310,8 +370,16 @@ public class DanWebSocketServer {
         }
 
         DanWebSocketSession session = new DanWebSocketSession(uuid);
-        InternalSession internal = new InternalSession(session, conn);
-        session.setEnqueue(f -> sendFrame(internal, f));
+        BulkQueue bulkQueue = new BulkQueue();
+        HeartbeatManager heartbeat = new HeartbeatManager();
+
+        InternalSession internal = new InternalSession(session, ch, bulkQueue, heartbeat);
+
+        session.setEnqueue(f -> bulkQueue.enqueue(f));
+        bulkQueue.onFlush(data -> sendBytes(ch, data));
+        heartbeat.onSend(data -> sendBytes(ch, data));
+        heartbeat.onTimeout(() -> handleSessionDisconnect(uuid));
+        heartbeat.start();
 
         if (authEnabled) {
             tmpSessions.put(uuid, internal);
@@ -325,9 +393,9 @@ public class DanWebSocketServer {
 
     private void activateSession(InternalSession internal, String principal) {
         if (isTopicMode()) {
-            internal.session.bindSessionTX(f -> sendFrame(internal, f));
+            internal.session.bindSessionTX(f -> internal.bulkQueue.enqueue(f));
             for (var cb : onConnection) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
-            sendFrame(internal, Frame.signal(FrameType.SERVER_SYNC));
+            internal.bulkQueue.enqueue(Frame.signal(FrameType.SERVER_SYNC));
         } else {
             String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : principal;
             PrincipalTX ptx = getPrincipal(effective);
@@ -362,8 +430,6 @@ public class DanWebSocketServer {
 
     private void processTopicSync(InternalSession internal) {
         DanWebSocketSession session = internal.session;
-
-        // Parse client wire data into topic name -> { wireIndex, params }
         Map<String, Integer> nameToIndex = new LinkedHashMap<>();
         Map<String, Map<String, Object>> newTopics = new LinkedHashMap<>();
 
@@ -401,49 +467,33 @@ public class DanWebSocketServer {
             }
         }
 
-        // Diff: unsubscribed
         Set<String> oldTopics = new HashSet<>(session.topics());
         for (String oldName : oldTopics) {
             if (!newTopics.containsKey(oldName)) {
-                // Fire new TopicHandle onUnsubscribe before disposing
                 TopicHandle handle = session.getTopicHandle(oldName);
                 if (handle != null) {
-                    for (var cb : topicNamespace.onUnsubscribeCbs) {
-                        try { cb.accept(session, handle); } catch (Exception ignored) {}
-                    }
+                    for (var cb : topicNamespace.onUnsubscribeCbs) { try { cb.accept(session, handle); } catch (Exception ignored) {} }
                 }
                 session.removeTopicHandle(oldName);
                 session.removeTopic(oldName);
-                // Backward compat
                 for (var cb : onTopicUnsubscribe) { try { cb.accept(session, oldName); } catch (Exception ignored) {} }
             }
         }
 
-        // Diff: new / changed
         for (var entry : newTopics.entrySet()) {
             String name = entry.getKey();
             Map<String, Object> params = entry.getValue();
             TopicHandle existingHandle = session.getTopicHandle(name);
 
             if (existingHandle == null) {
-                // New subscription — use client's wire index
                 int wireIndex = nameToIndex.getOrDefault(name, session.nextTopicIndex());
                 TopicHandle handle = session.createTopicHandle(name, params, wireIndex);
-
-                // Fire new TopicHandle onSubscribe
-                for (var cb : topicNamespace.onSubscribeCbs) {
-                    try { cb.accept(session, handle); } catch (Exception ignored) {}
-                }
-
-                // Backward compat
+                for (var cb : topicNamespace.onSubscribeCbs) { try { cb.accept(session, handle); } catch (Exception ignored) {} }
                 TopicInfo info = new TopicInfo(name, params);
                 for (var cb : onTopicSubscribe) { try { cb.accept(session, info); } catch (Exception ignored) {} }
             } else {
-                // Params changed?
                 if (!existingHandle.params().equals(params)) {
                     existingHandle.updateParams(params);
-
-                    // Backward compat
                     session.updateTopicParams(name, params);
                     TopicInfo info = new TopicInfo(name, params);
                     for (var cb : onTopicParamsChange) { try { cb.accept(session, info); } catch (Exception ignored) {} }
@@ -459,17 +509,19 @@ public class DanWebSocketServer {
 
         internal.session.disposeAllTopicHandles();
         internal.session.handleDisconnect();
-        internal.ws = null;
+        internal.heartbeat.stop();
+        internal.bulkQueue.clear();
+        internal.ch = null;
 
-        internal.ttlFuture = scheduler.schedule(() -> {
+        internal.ttlFuture = ttlScheduler.schedule(() -> {
             sessions.remove(uuid);
             for (var cb : onSessionExpired) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
         }, ttl, TimeUnit.MILLISECONDS);
     }
 
-    private void sendFrame(InternalSession internal, Frame frame) {
-        if (internal.ws != null && internal.ws.isOpen()) {
-            internal.ws.send(ByteBuffer.wrap(Codec.encode(frame)));
+    private static void sendBytes(Channel ch, byte[] data) {
+        if (ch != null && ch.isActive()) {
+            ch.writeAndFlush(new BinaryWebSocketFrame(Unpooled.wrappedBuffer(data)));
         }
     }
 
@@ -478,7 +530,7 @@ public class DanWebSocketServer {
             throw new DanWSException("INVALID_MODE", "server." + method + "() is only available in " + expected + " mode.");
     }
 
-    private static final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+    private static final ScheduledExecutorService ttlScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "danws-ttl");
         t.setDaemon(true);
         return t;
@@ -494,14 +546,18 @@ public class DanWebSocketServer {
 
     static class InternalSession {
         DanWebSocketSession session;
-        WebSocket ws;
+        Channel ch;
+        BulkQueue bulkQueue;
+        HeartbeatManager heartbeat;
         ScheduledFuture<?> ttlFuture;
         KeyRegistry clientRegistry;
         Map<Integer, Object> clientValues;
 
-        InternalSession(DanWebSocketSession session, WebSocket ws) {
+        InternalSession(DanWebSocketSession session, Channel ch, BulkQueue bulkQueue, HeartbeatManager heartbeat) {
             this.session = session;
-            this.ws = ws;
+            this.ch = ch;
+            this.bulkQueue = bulkQueue;
+            this.heartbeat = heartbeat;
         }
     }
 }

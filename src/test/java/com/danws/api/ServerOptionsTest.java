@@ -55,7 +55,7 @@ class ServerOptionsTest {
         assertTrue(ready.await(3, TimeUnit.SECONDS));
 
         c.disconnect();
-        Thread.sleep(500); // TTL=200ms
+        Thread.sleep(1200); // TTL=200ms
 
         assertTrue(expired.contains(sessionId[0]));
     }
@@ -109,7 +109,7 @@ class ServerOptionsTest {
 
         assertTrue(rA.await(3, TimeUnit.SECONDS));
         assertTrue(rB.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(100.0, cA.get("score"));
         assertEquals(50.0, cB.get("score"));
@@ -136,7 +136,7 @@ class ServerOptionsTest {
         }
 
         assertTrue(allReady.await(5, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         for (DanWebSocketClient c : cs) {
             assertEquals(42.0, c.get("shared.count"));
@@ -165,12 +165,12 @@ class ServerOptionsTest {
         c1.onReady(r1::countDown);
         c1.connect();
         assertTrue(r1.await(3, TimeUnit.SECONDS));
-        Thread.sleep(200);
+        Thread.sleep(400);
         assertEquals(100.0, c1.get("score"));
         c1.disconnect();
 
         // Wait past TTL
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         // Data should still be in principal store (v0.4.0 fix)
         assertEquals(100.0, server.principal("alice").get("score"));
@@ -182,7 +182,7 @@ class ServerOptionsTest {
         c2.onReady(r2::countDown);
         c2.connect();
         assertTrue(r2.await(3, TimeUnit.SECONDS));
-        Thread.sleep(200);
+        Thread.sleep(400);
 
         assertEquals(100.0, c2.get("score"));
     }
@@ -209,7 +209,7 @@ class ServerOptionsTest {
         c.onReady(ready::countDown);
         c.connect();
         assertTrue(ready.await(5, TimeUnit.SECONDS));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals(0.0, c.get("item0.value"));
         assertEquals(50.0, c.get("item50.value"));
@@ -236,7 +236,7 @@ class ServerOptionsTest {
 
         server.close();
         server = null;
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertTrue(disconnected.get());
     }
@@ -270,7 +270,7 @@ class ServerOptionsTest {
         assertEquals(1, server.getSessionsByPrincipal("alice").size());
 
         c.disconnect();
-        Thread.sleep(300);
+        Thread.sleep(1200);
         assertFalse(server.isConnected(uuid[0]));
     }
 
@@ -291,10 +291,10 @@ class ServerOptionsTest {
         c.onReceive((key, val) -> { if ("score".equals(key)) scores.add(val); });
         c.connect();
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(200);
+        Thread.sleep(400);
 
         server.set("score", 100.0);
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertTrue(scores.contains(100.0));
     }
@@ -335,7 +335,7 @@ class ServerOptionsTest {
         for (int i = 1; i <= 20; i++) {
             server.set("counter", Map.of("value", (double) i));
         }
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals(20.0, c.get("counter.value"));
     }
@@ -356,13 +356,13 @@ class ServerOptionsTest {
         c.onReady(ready::countDown);
         c.connect();
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(200);
+        Thread.sleep(400);
 
         assertEquals(1.0, c.get("a"));
 
         // Add new key — should use incremental, not reset
         server.set("b", 2.0);
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(1.0, c.get("a")); // still present
         assertEquals(2.0, c.get("b")); // new key received

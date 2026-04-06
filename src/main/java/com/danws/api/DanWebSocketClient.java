@@ -3,11 +3,18 @@ package com.danws.api;
 import com.danws.protocol.*;
 import com.danws.state.KeyRegistry;
 import com.danws.state.KeyRegistry.KeyEntry;
-import org.java_websocket.client.WebSocketClient;
-import org.java_websocket.handshake.ServerHandshake;
+
+import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.*;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.websocketx.*;
 
 import java.net.URI;
-import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
@@ -22,13 +29,15 @@ public class DanWebSocketClient {
     private static final Pattern TOPIC_WIRE_PATTERN = Pattern.compile("^t\\.(\\d+)\\.(.+)$");
 
     private final String id;
-    private final URI url;
+    private final URI uri;
     private State state = State.DISCONNECTED;
-    private WebSocketClient ws;
+    private Channel channel;
+    private EventLoopGroup group;
     private boolean intentionalDisconnect;
 
     private final KeyRegistry registry = new KeyRegistry();
     private final Map<Integer, Object> store = new ConcurrentHashMap<>();
+    private final StreamParser parser = new StreamParser(); // reuse instance
 
     // Topic state
     private final Map<String, Map<String, Object>> subscriptions = new LinkedHashMap<>();
@@ -40,14 +49,18 @@ public class DanWebSocketClient {
     private final List<Runnable> onDisconnect = new ArrayList<>();
     private final List<Runnable> onReady = new ArrayList<>();
     private final List<BiConsumer<String, Object>> onReceive = new ArrayList<>();
-    private final List<Consumer<TopicClientPayloadView>> onUpdate = new ArrayList<>();
     private final List<Runnable> onReconnect = new ArrayList<>();
     private final List<Runnable> onReconnectFailed = new ArrayList<>();
     private final List<Consumer<DanWSException>> onError = new ArrayList<>();
 
     public DanWebSocketClient(String url) {
-        this.url = URI.create(url);
+        this.uri = URI.create(url);
         this.id = generateUUIDv7();
+
+        // Setup parser callbacks once (reuse)
+        parser.onFrame(this::handleFrame);
+        parser.onHeartbeat(() -> sendRaw(Codec.encodeHeartbeat()));
+        parser.onError(e -> {});
     }
 
     public String id() { return id; }
@@ -66,25 +79,44 @@ public class DanWebSocketClient {
         intentionalDisconnect = false;
         state = State.CONNECTING;
 
-        ws = new WebSocketClient(url) {
-            @Override public void onOpen(ServerHandshake handshake) { handleOpen(); }
-            @Override public void onClose(int code, String reason, boolean remote) { handleClose(); }
-            @Override public void onMessage(String message) {}
-            @Override public void onMessage(ByteBuffer bytes) { handleMessage(bytes); }
-            @Override public void onError(Exception ex) {}
-        };
-        ws.connect();
+        group = new NioEventLoopGroup(1);
+        String scheme = uri.getScheme();
+        int port = uri.getPort();
+        if (port == -1) port = "wss".equals(scheme) ? 443 : 80;
+        String wsPath = uri.getRawPath() != null && !uri.getRawPath().isEmpty() ? uri.getRawPath() : "/";
+
+        WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
+                uri, WebSocketVersion.V13, null, true, new DefaultHttpHeaders());
+
+        int finalPort = port;
+        Bootstrap b = new Bootstrap();
+        b.group(group)
+         .channel(NioSocketChannel.class)
+         .option(ChannelOption.TCP_NODELAY, true)
+         .handler(new ChannelInitializer<SocketChannel>() {
+             @Override
+             protected void initChannel(SocketChannel ch) {
+                 ch.pipeline().addLast(
+                     new HttpClientCodec(),
+                     new HttpObjectAggregator(65536),
+                     new ClientHandler(handshaker)
+                 );
+             }
+         });
+
+        b.connect(uri.getHost(), finalPort).addListener((ChannelFutureListener) f -> {
+            if (!f.isSuccess()) handleClose();
+        });
     }
 
     public void disconnect() {
         intentionalDisconnect = true;
         state = State.DISCONNECTED;
-        if (ws != null) { try { ws.close(); } catch (Exception ignored) {} ws = null; }
+        cleanup();
         onDisconnect.forEach(Runnable::run);
     }
 
     public void authorize(String token) {
-        if (ws == null || !ws.isOpen()) return;
         sendFrame(new Frame(FrameType.AUTH, 0, DataType.STRING, token));
         state = State.AUTHORIZING;
     }
@@ -96,9 +128,7 @@ public class DanWebSocketClient {
         sendTopicSync();
     }
 
-    public void subscribe(String topicName) {
-        subscribe(topicName, Map.of());
-    }
+    public void subscribe(String topicName) { subscribe(topicName, Map.of()); }
 
     public void unsubscribe(String topicName) {
         if (subscriptions.remove(topicName) != null) sendTopicSync();
@@ -110,9 +140,7 @@ public class DanWebSocketClient {
         sendTopicSync();
     }
 
-    public List<String> topics() {
-        return new ArrayList<>(subscriptions.keySet());
-    }
+    public List<String> topics() { return new ArrayList<>(subscriptions.keySet()); }
 
     public TopicClientHandle topic(String name) {
         return topicClientHandles.computeIfAbsent(name, n -> {
@@ -129,12 +157,59 @@ public class DanWebSocketClient {
     public void onDisconnect(Runnable cb) { onDisconnect.add(cb); }
     public void onReady(Runnable cb) { onReady.add(cb); }
     public void onReceive(BiConsumer<String, Object> cb) { onReceive.add(cb); }
-    public void onUpdate(Consumer<TopicClientPayloadView> cb) { onUpdate.add(cb); }
     public void onReconnect(Runnable cb) { onReconnect.add(cb); }
     public void onReconnectFailed(Runnable cb) { onReconnectFailed.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
 
-    // ---- Internals ----
+    // ──── Netty Client Handler ────
+
+    private class ClientHandler extends SimpleChannelInboundHandler<Object> {
+        private final WebSocketClientHandshaker handshaker;
+
+        ClientHandler(WebSocketClientHandshaker handshaker) {
+            this.handshaker = handshaker;
+        }
+
+        @Override
+        public void channelActive(ChannelHandlerContext ctx) {
+            handshaker.handshake(ctx.channel());
+        }
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
+            if (!handshaker.isHandshakeComplete()) {
+                try {
+                    handshaker.finishHandshake(ctx.channel(), (FullHttpResponse) msg);
+                    channel = ctx.channel();
+                    handleOpen();
+                } catch (WebSocketHandshakeException e) {
+                    handleClose();
+                }
+                return;
+            }
+
+            if (msg instanceof BinaryWebSocketFrame binaryFrame) {
+                ByteBuf content = binaryFrame.content();
+                byte[] bytes = new byte[content.readableBytes()];
+                content.readBytes(bytes);
+                parser.feed(bytes);
+            } else if (msg instanceof CloseWebSocketFrame) {
+                ctx.close();
+            }
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+            handleClose();
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            ctx.close();
+        }
+    }
+
+    // ──── Internals ────
 
     private void handleOpen() {
         state = State.IDENTIFYING;
@@ -148,21 +223,6 @@ public class DanWebSocketClient {
         onDisconnect.forEach(Runnable::run);
     }
 
-    private void handleMessage(ByteBuffer message) {
-        byte[] bytes = new byte[message.remaining()];
-        message.get(bytes);
-
-        StreamParser parser = new StreamParser();
-        parser.onFrame(this::handleFrame);
-        parser.onHeartbeat(() -> {
-            if (ws != null && ws.isOpen()) ws.send(ByteBuffer.wrap(Codec.encodeHeartbeat()));
-        });
-        parser.onError(e -> {
-            if (e instanceof DanWSException de) onError.forEach(cb -> cb.accept(de));
-        });
-        parser.feed(bytes);
-    }
-
     private void handleFrame(Frame frame) {
         switch (frame.frameType()) {
             case AUTH_OK -> state = State.SYNCHRONIZING;
@@ -170,7 +230,7 @@ public class DanWebSocketClient {
                 intentionalDisconnect = true;
                 var err = new DanWSException("AUTH_REJECTED", String.valueOf(frame.payload()));
                 onError.forEach(cb -> cb.accept(err));
-                if (ws != null) ws.close();
+                cleanup();
                 state = State.DISCONNECTED;
                 onDisconnect.forEach(Runnable::run);
             }
@@ -181,7 +241,6 @@ public class DanWebSocketClient {
             case SERVER_SYNC -> {
                 if (state == State.IDENTIFYING) state = State.SYNCHRONIZING;
                 sendFrame(Frame.signal(FrameType.CLIENT_READY));
-
                 if (registry.size() == 0) {
                     state = State.READY;
                     onReady.forEach(Runnable::run);
@@ -208,7 +267,6 @@ public class DanWebSocketClient {
                             if (handle != null) handle.notify(key, frame.payload());
                         }
                     } else {
-                        // Global key
                         for (var cb : onReceive) { try { cb.accept(path, frame.payload()); } catch (Exception ignored) {} }
                     }
                 }
@@ -218,7 +276,7 @@ public class DanWebSocketClient {
                     if (!subscriptions.isEmpty()) sendTopicSync();
                 }
             }
-            case SERVER_READY -> { /* Server acknowledged topic sync */ }
+            case SERVER_READY -> { /* acknowledged */ }
             case SERVER_RESET -> {
                 registry.clear();
                 store.clear();
@@ -233,7 +291,7 @@ public class DanWebSocketClient {
     }
 
     private void sendTopicSync() {
-        if (ws == null || !ws.isOpen()) return;
+        if (channel == null || !channel.isActive()) return;
 
         List<String> paths = new ArrayList<>();
         List<Object> values = new ArrayList<>();
@@ -248,7 +306,6 @@ public class DanWebSocketClient {
             topicIndexMap.put(topicName, idx);
             indexToTopic.put(idx, topicName);
 
-            // Update existing handle's index
             TopicClientHandle handle = topicClientHandles.get(topicName);
             if (handle != null) handle.setIndex(idx);
 
@@ -265,22 +322,28 @@ public class DanWebSocketClient {
         }
 
         sendFrame(Frame.signal(FrameType.CLIENT_RESET));
-
         for (int i = 0; i < paths.size(); i++) {
             sendFrame(new Frame(FrameType.CLIENT_KEY_REGISTRATION, i + 1, types.get(i), paths.get(i)));
         }
-
         for (int i = 0; i < values.size(); i++) {
             sendFrame(new Frame(FrameType.CLIENT_VALUE, i + 1, types.get(i), values.get(i)));
         }
-
         sendFrame(Frame.signal(FrameType.CLIENT_SYNC));
     }
 
     private void sendFrame(Frame frame) {
-        if (ws != null && ws.isOpen()) {
-            ws.send(ByteBuffer.wrap(Codec.encode(frame)));
+        sendRaw(Codec.encode(frame));
+    }
+
+    private void sendRaw(byte[] data) {
+        if (channel != null && channel.isActive()) {
+            channel.writeAndFlush(new BinaryWebSocketFrame(Unpooled.wrappedBuffer(data)));
         }
+    }
+
+    private void cleanup() {
+        if (channel != null) { try { channel.close(); } catch (Exception ignored) {} channel = null; }
+        if (group != null) { group.shutdownGracefully(0, 100, java.util.concurrent.TimeUnit.MILLISECONDS); group = null; }
     }
 
     private static String generateUUIDv7() {

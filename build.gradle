@@ -19,7 +19,7 @@ repositories {
 }
 
 dependencies {
-    api 'org.java-websocket:Java-WebSocket:1.6.0'
+    api 'io.netty:netty-all:4.2.12.Final'
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

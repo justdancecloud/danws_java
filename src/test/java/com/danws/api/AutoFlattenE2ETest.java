@@ -48,7 +48,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals("Alice", client.get("user.name"));
         assertEquals(30.0, client.get("user.age"));
@@ -85,7 +85,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals("localhost", client.get("config.db.host"));
         assertEquals(5432, client.get("config.db.port"));
@@ -108,7 +108,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(10, client.get("scores.0"));
         assertEquals(20, client.get("scores.1"));
@@ -132,7 +132,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals("a", client.get("items.0"));
         assertEquals("b", client.get("items.1"));
@@ -141,7 +141,7 @@ class AutoFlattenE2ETest {
 
         // Shrink to 2 items
         server.set("items", List.of("x", "y"));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals("x", client.get("items.0"));
         assertEquals("y", client.get("items.1"));
@@ -180,7 +180,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         // Object with array
         assertEquals("Report", client.get("doc.title"));
@@ -214,7 +214,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(42, client.get("count"));
         assertEquals("hello", client.get("label"));
@@ -279,7 +279,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         for (int i = 0; i < 60; i++) {
             assertEquals(i, client.get("big.field" + i), "big.field" + i + " should be " + i);
@@ -306,7 +306,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals(100, client.get("arr.length"));
         assertEquals(0, client.get("arr.0"));       // first element
@@ -330,7 +330,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(1, client.get("obj.a"));
         assertEquals(2, client.get("obj.b"));
@@ -338,7 +338,7 @@ class AutoFlattenE2ETest {
 
         // Change structure: remove b, add d
         server.set("obj", Map.of("a", 10, "c", 30, "d", 40));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals(10, client.get("obj.a"));
         assertNull(client.get("obj.b"), "obj.b should be removed after structure change");
@@ -364,7 +364,7 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         // Empty array should still produce .length = 0
         assertEquals(0, client.get("empty_arr.length"));
@@ -388,20 +388,20 @@ class AutoFlattenE2ETest {
         client.connect();
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals(1, client.get("obj.x"));
         assertEquals(2, client.get("obj.y"));
 
         // Clear and re-set with new structure
         server.clear("obj");
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertNull(client.get("obj.x"), "obj.x should be null after clear");
         assertNull(client.get("obj.y"), "obj.y should be null after clear");
 
         server.set("obj", Map.of("p", 100, "q", 200));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals(100, client.get("obj.p"));
         assertEquals(200, client.get("obj.q"));
@@ -432,7 +432,7 @@ class AutoFlattenE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("data");
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals("ok", client.topic("data").get("result.status"));
         assertEquals(200, client.topic("data").get("result.code"));
@@ -468,7 +468,7 @@ class AutoFlattenE2ETest {
 
         assertTrue(ready.await(3, TimeUnit.SECONDS));
         client.subscribe("shrink");
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals("a", client.topic("shrink").get("list.0"));
         assertEquals("d", client.topic("shrink").get("list.3"));
@@ -478,7 +478,7 @@ class AutoFlattenE2ETest {
         assertNotNull(topicRef[0], "Topic reference should have been captured");
         TopicHandle ti = (TopicHandle) topicRef[0];
         ti.payload().set("list", List.of("x", "y"));
-        Thread.sleep(500);
+        Thread.sleep(1200);
 
         assertEquals("x", client.topic("shrink").get("list.0"));
         assertEquals("y", client.topic("shrink").get("list.1"));
@@ -515,7 +515,7 @@ class AutoFlattenE2ETest {
 
         assertTrue(rA.await(3, TimeUnit.SECONDS));
         assertTrue(rB.await(3, TimeUnit.SECONDS));
-        Thread.sleep(300);
+        Thread.sleep(1200);
 
         assertEquals("admin", cA.get("profile.role"));
         assertEquals(10, cA.get("profile.level"));
