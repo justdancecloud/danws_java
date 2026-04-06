@@ -41,8 +41,10 @@ public class DanWebSocketServer {
     private final List<BiConsumer<DanWebSocketSession, String>> onTopicUnsubscribe = new ArrayList<>();
     private final List<BiConsumer<DanWebSocketSession, TopicInfo>> onTopicParamsChange = new ArrayList<>();
 
+    // Topic namespace
+    private final TopicNamespace topicNamespace = new TopicNamespace();
+
     public DanWebSocketServer(int port, String path, Mode mode, long ttlMs) {
-        // INDIVIDUAL is alias for PRINCIPAL
         this.mode = (mode == Mode.INDIVIDUAL) ? Mode.PRINCIPAL : mode;
         this.ttl = ttlMs;
 
@@ -75,6 +77,18 @@ public class DanWebSocketServer {
 
     private boolean isTopicMode() {
         return mode == Mode.SESSION_TOPIC || mode == Mode.SESSION_PRINCIPAL_TOPIC;
+    }
+
+    // ---- Topic namespace ----
+
+    public TopicNamespace topic() { return topicNamespace; }
+
+    public static class TopicNamespace {
+        private final List<BiConsumer<DanWebSocketSession, TopicHandle>> onSubscribeCbs = new ArrayList<>();
+        private final List<BiConsumer<DanWebSocketSession, TopicHandle>> onUnsubscribeCbs = new ArrayList<>();
+
+        public void onSubscribe(BiConsumer<DanWebSocketSession, TopicHandle> cb) { onSubscribeCbs.add(cb); }
+        public void onUnsubscribe(BiConsumer<DanWebSocketSession, TopicHandle> cb) { onUnsubscribeCbs.add(cb); }
     }
 
     // ---- Broadcast mode API ----
@@ -158,6 +172,7 @@ public class DanWebSocketServer {
 
     public void close() {
         for (InternalSession i : sessions.values()) {
+            i.session.disposeAllTopicHandles();
             i.session.handleDisconnect();
             if (i.ttlFuture != null) i.ttlFuture.cancel(false);
         }
@@ -301,7 +316,6 @@ public class DanWebSocketServer {
         if (isTopicMode()) {
             internal.session.bindSessionTX(f -> sendFrame(internal, f));
             for (var cb : onConnection) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
-            // Send empty ServerSync so client transitions to ready
             sendFrame(internal, Frame.signal(FrameType.SERVER_SYNC));
         } else {
             String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : principal;
@@ -338,6 +352,8 @@ public class DanWebSocketServer {
     private void processTopicSync(InternalSession internal) {
         DanWebSocketSession session = internal.session;
 
+        // Parse client wire data into topic name -> { wireIndex, params }
+        Map<String, Integer> nameToIndex = new LinkedHashMap<>();
         Map<String, Map<String, Object>> newTopics = new LinkedHashMap<>();
 
         if (internal.clientRegistry != null && internal.clientValues != null) {
@@ -350,7 +366,9 @@ public class DanWebSocketServer {
                     if (entry != null) {
                         String topicName = (String) internal.clientValues.get(entry.keyId());
                         if (topicName != null) {
-                            indexToName.put(m.group(1), topicName);
+                            String wireIdx = m.group(1);
+                            indexToName.put(wireIdx, topicName);
+                            nameToIndex.put(topicName, Integer.parseInt(wireIdx));
                             newTopics.putIfAbsent(topicName, new HashMap<>());
                         }
                     }
@@ -376,7 +394,16 @@ public class DanWebSocketServer {
         Set<String> oldTopics = new HashSet<>(session.topics());
         for (String oldName : oldTopics) {
             if (!newTopics.containsKey(oldName)) {
+                // Fire new TopicHandle onUnsubscribe before disposing
+                TopicHandle handle = session.getTopicHandle(oldName);
+                if (handle != null) {
+                    for (var cb : topicNamespace.onUnsubscribeCbs) {
+                        try { cb.accept(session, handle); } catch (Exception ignored) {}
+                    }
+                }
+                session.removeTopicHandle(oldName);
                 session.removeTopic(oldName);
+                // Backward compat
                 for (var cb : onTopicUnsubscribe) { try { cb.accept(session, oldName); } catch (Exception ignored) {} }
             }
         }
@@ -385,14 +412,27 @@ public class DanWebSocketServer {
         for (var entry : newTopics.entrySet()) {
             String name = entry.getKey();
             Map<String, Object> params = entry.getValue();
-            TopicInfo existing = session.topic(name);
+            TopicHandle existingHandle = session.getTopicHandle(name);
 
-            if (existing == null) {
-                session.addTopic(name, params);
+            if (existingHandle == null) {
+                // New subscription — use client's wire index
+                int wireIndex = nameToIndex.getOrDefault(name, session.nextTopicIndex());
+                TopicHandle handle = session.createTopicHandle(name, params, wireIndex);
+
+                // Fire new TopicHandle onSubscribe
+                for (var cb : topicNamespace.onSubscribeCbs) {
+                    try { cb.accept(session, handle); } catch (Exception ignored) {}
+                }
+
+                // Backward compat
                 TopicInfo info = new TopicInfo(name, params);
                 for (var cb : onTopicSubscribe) { try { cb.accept(session, info); } catch (Exception ignored) {} }
             } else {
-                if (!existing.params().equals(params)) {
+                // Params changed?
+                if (!existingHandle.params().equals(params)) {
+                    existingHandle.updateParams(params);
+
+                    // Backward compat
                     session.updateTopicParams(name, params);
                     TopicInfo info = new TopicInfo(name, params);
                     for (var cb : onTopicParamsChange) { try { cb.accept(session, info); } catch (Exception ignored) {} }
@@ -406,6 +446,7 @@ public class DanWebSocketServer {
         if (internal == null) { tmpSessions.remove(uuid); return; }
         if (!internal.session.connected()) return;
 
+        internal.session.disposeAllTopicHandles();
         internal.session.handleDisconnect();
         internal.ws = null;
 

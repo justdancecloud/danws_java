@@ -28,13 +28,15 @@ public class DanWebSocketSession {
     private boolean serverSyncSent;
     private boolean clientReadyReceived;
 
-    // Session-level TX store (topic modes)
-    private final KeyRegistry sessionRegistry = new KeyRegistry();
+    // Session-level flat TX store (backward compat, keyId starts at 50001)
+    private final KeyRegistry sessionRegistry = new KeyRegistry(50001);
     private final Map<Integer, Object> sessionStore = new ConcurrentHashMap<>();
     private Consumer<Frame> sessionEnqueue;
     private boolean sessionBound;
 
-    // Topic state
+    // Topic handles
+    private final Map<String, TopicHandle> topicHandles = new LinkedHashMap<>();
+    private int topicIndex = 0;
     private final Map<String, TopicInfo> topics = new LinkedHashMap<>();
 
     public DanWebSocketSession(String clientUuid) {
@@ -62,7 +64,7 @@ public class DanWebSocketSession {
         state = State.DISCONNECTED;
     }
 
-    // ---- Session-level data API (topic modes) ----
+    // ---- Session-level flat data API (backward compat) ----
 
     public void set(String key, Object value) {
         if (!sessionBound) {
@@ -124,15 +126,15 @@ public class DanWebSocketSession {
         }
     }
 
-    // ---- Topic API ----
+    // ---- Topic API (backward compat) ----
 
-    public List<String> topics() {
-        return new ArrayList<>(topics.keySet());
-    }
+    public List<String> topics() { return new ArrayList<>(topics.keySet()); }
+    public TopicInfo topic(String name) { return topics.get(name); }
 
-    public TopicInfo topic(String name) {
-        return topics.get(name);
-    }
+    // ---- Topic Handle API (new) ----
+
+    public TopicHandle getTopicHandle(String name) { return topicHandles.get(name); }
+    public Map<String, TopicHandle> topicHandles() { return topicHandles; }
 
     // ---- Internal methods ----
 
@@ -212,35 +214,77 @@ public class DanWebSocketSession {
         state = State.AUTHORIZED;
     }
 
+    // Backward compat topic management
     void addTopic(String name, Map<String, Object> params) {
         topics.put(name, new TopicInfo(name, params));
     }
 
-    boolean removeTopic(String name) {
-        return topics.remove(name) != null;
-    }
+    boolean removeTopic(String name) { return topics.remove(name) != null; }
 
     void updateTopicParams(String name, Map<String, Object> params) {
         TopicInfo t = topics.get(name);
         if (t != null) topics.put(name, new TopicInfo(name, params));
     }
 
+    // ---- TopicHandle management ----
+
+    int nextTopicIndex() { return topicIndex; }
+
+    TopicHandle createTopicHandle(String name, Map<String, Object> params, int wireIndex) {
+        if (wireIndex >= topicIndex) topicIndex = wireIndex + 1;
+        TopicPayload payload = new TopicPayload(wireIndex);
+        if (sessionEnqueue != null) {
+            payload.bind(sessionEnqueue, this::triggerSessionResync);
+        }
+        TopicHandle handle = new TopicHandle(name, params, payload, this);
+        topicHandles.put(name, handle);
+        topics.put(name, new TopicInfo(name, params));
+        return handle;
+    }
+
+    void removeTopicHandle(String name) {
+        TopicHandle handle = topicHandles.get(name);
+        if (handle != null) {
+            handle.dispose();
+            topicHandles.remove(name);
+            topics.remove(name);
+            triggerSessionResync();
+        }
+    }
+
+    void disposeAllTopicHandles() {
+        for (TopicHandle h : topicHandles.values()) h.dispose();
+        topicHandles.clear();
+    }
+
+    // ---- Private ----
+
     private void triggerSessionResync() {
         if (sessionEnqueue == null) return;
 
         sessionEnqueue.accept(Frame.signal(FrameType.SERVER_RESET));
 
+        // Flat session keys
         for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
             sessionEnqueue.accept(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
+        }
+        // Topic payload keys
+        for (TopicHandle h : topicHandles.values()) {
+            h.payload().buildKeyFrames().forEach(sessionEnqueue);
         }
 
         sessionEnqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
 
+        // Flat session values
         for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
             Object val = sessionStore.get(entry.keyId());
             if (val != null) {
                 sessionEnqueue.accept(Frame.value(entry.keyId(), entry.type(), val));
             }
+        }
+        // Topic payload values
+        for (TopicHandle h : topicHandles.values()) {
+            h.payload().buildValueFrames().forEach(sessionEnqueue);
         }
     }
 }

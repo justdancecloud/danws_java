@@ -34,7 +34,7 @@ You just `set(key, value)` on the server. All connected clients receive it insta
 
 ```groovy
 dependencies {
-    implementation 'io.github.justdancecloud:dan-websocket:0.2.0'
+    implementation 'io.github.justdancecloud:dan-websocket:0.3.2'
 }
 ```
 
@@ -44,7 +44,7 @@ dependencies {
 <dependency>
     <groupId>io.github.justdancecloud</groupId>
     <artifactId>dan-websocket</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.2</version>
 </dependency>
 ```
 
@@ -58,8 +58,8 @@ Requires **Java 17+**.
 |------|------|-----------|--------|----------|
 | `BROADCAST` | No | Shared (all clients) | No | Dashboards, live feeds |
 | `PRINCIPAL` | Yes | Per-principal (shared across devices) | No | Games, per-user data |
-| `SESSION_TOPIC` | No | Per-session | Yes | Public charts, anonymous boards |
-| `SESSION_PRINCIPAL_TOPIC` | Yes | Per-session + principal identity | Yes | Authenticated boards, personalized charts |
+| `SESSION_TOPIC` | No | Per-session + topic scoped | Yes | Public charts, anonymous boards |
+| `SESSION_PRINCIPAL_TOPIC` | Yes | Per-session + topic scoped + auth | Yes | Authenticated boards, personalized charts |
 
 ---
 
@@ -128,29 +128,52 @@ server.principal("bob").set("score", 50.0);
 server.principal("alice").set("score", 200.0);
 ```
 
-### 3. Session Topic Mode — per-session data driven by client topics
+**Client:**
+
+```java
+var client = new DanWebSocketClient("ws://localhost:8080");
+
+client.onConnect(() -> client.authorize("alice-jwt-token"));
+
+client.onReady(() -> {
+    System.out.println("Score: " + client.get("score"));
+});
+
+client.onReceive((key, value) -> {
+    System.out.println(key + " = " + value);
+});
+
+client.connect();
+```
+
+### 3. Session Topic Mode — per-session scoped data with topics
 
 **Server:**
 
 ```java
 var server = new DanWebSocketServer(8080, Mode.SESSION_TOPIC);
 
-server.onTopicSubscribe((session, topic) -> {
-    // topic.name() = "board.posts"
-    // topic.params() = { page=1.0, size=20.0 }
-    var data = db.getPosts(topic.params());
-    session.set("posts", data.items());       // push to THIS session only
-    session.set("totalCount", data.total());
+server.topic().onSubscribe((session, topic) -> {
+    if ("board.posts".equals(topic.name())) {
+        topic.setCallback((event, t, s) -> {
+            var data = db.getPosts(t.params());
+            t.payload().set("items", data.items());
+            t.payload().set("totalCount", data.total());
+        });
+    }
+
+    if ("chart.cpu".equals(topic.name())) {
+        topic.setCallback((event, t, s) -> {
+            var stats = getCpuStats();
+            t.payload().set("value", stats.usage());
+            t.payload().set("timestamp", new Date());
+        });
+        topic.setDelayedTask(1000); // poll every 1s
+    }
 });
 
-server.onTopicParamsChange((session, topic) -> {
-    var data = db.getPosts(topic.params());
-    session.set("posts", data.items());
-});
-
-server.onTopicUnsubscribe((session, topicName) -> {
-    session.clearKey("posts");
-    session.clearKey("totalCount");
+server.topic().onUnsubscribe((session, topic) -> {
+    System.out.println("Unsubscribed: " + topic.name());
 });
 ```
 
@@ -161,18 +184,28 @@ var client = new DanWebSocketClient("ws://localhost:8080");
 
 client.onReady(() -> {
     client.subscribe("board.posts", Map.of("page", 1.0, "size", 20.0));
-    client.subscribe("chart.sales", Map.of("range", "7d"));
+    client.subscribe("chart.cpu");
 });
 
-client.onReceive((key, value) -> {
-    if ("posts".equals(key)) renderTable(value);
+// Per-topic scoped data
+client.topic("board.posts").onReceive((key, value) -> {
+    if ("items".equals(key)) renderTable(value);
 });
 
-// Change page
+client.topic("board.posts").onUpdate(payload -> {
+    System.out.println("Posts keys: " + payload.keys());
+    System.out.println("Total: " + payload.get("totalCount"));
+});
+
+client.topic("chart.cpu").onReceive((key, value) -> {
+    if ("value".equals(key)) updateChart(value);
+});
+
+// Change page → triggers CHANGED_PARAMS event
 client.setParams("board.posts", Map.of("page", 2.0, "size", 20.0));
 
-// Unsubscribe
-client.unsubscribe("chart.sales");
+// Stop watching CPU → timer auto-cleanup
+client.unsubscribe("chart.cpu");
 
 client.connect();
 ```
@@ -188,12 +221,92 @@ server.onAuthorize((uuid, token) -> {
     server.authorize(uuid, token, user);
 });
 
-server.onTopicSubscribe((session, topic) -> {
-    // session.principal() = "alice"
-    var data = db.getUserPosts(session.principal(), topic.params());
-    session.set("posts", data.items());
+server.topic().onSubscribe((session, topic) -> {
+    if ("my.dashboard".equals(topic.name())) {
+        topic.setCallback((event, t, s) -> {
+            // s.principal() = authenticated user
+            var data = db.getUserDashboard(s.principal(), t.params());
+            t.payload().set("widgets", data.widgets());
+            t.payload().set("notifications", data.count());
+        });
+        topic.setDelayedTask(5000); // refresh every 5s
+    }
 });
 ```
+
+**Client:**
+
+```java
+var client = new DanWebSocketClient("ws://localhost:8080");
+
+client.onConnect(() -> client.authorize("alice-jwt-token"));
+
+client.onReady(() -> {
+    client.subscribe("my.dashboard", Map.of("layout", "compact"));
+});
+
+client.topic("my.dashboard").onUpdate(payload -> {
+    System.out.println("Widgets: " + payload.get("widgets"));
+    System.out.println("Notifications: " + payload.get("notifications"));
+});
+
+client.connect();
+```
+
+---
+
+## Topic API — `setCallback` + `setDelayedTask` Pattern
+
+The topic API uses a single callback pattern with `EventType`:
+
+```java
+server.topic().onSubscribe((session, topic) -> {
+    // One callback handles all lifecycle events
+    topic.setCallback((event, t, s) -> {
+        switch (event) {
+            case SUBSCRIBE -> {
+                // First call — load initial data
+                t.payload().set("items", db.getItems(t.params()));
+            }
+            case CHANGED_PARAMS -> {
+                // Client changed params (e.g., page change)
+                t.payload().set("items", db.getItems(t.params()));
+            }
+            case DELAYED_TASK -> {
+                // Periodic polling
+                t.payload().set("items", db.getItems(t.params()));
+            }
+        }
+    });
+
+    // Optional: enable periodic polling
+    topic.setDelayedTask(2000); // every 2 seconds
+
+    // Can stop later:
+    // topic.clearDelayedTask();
+});
+```
+
+**EventType values:**
+
+| Event | When | Description |
+|-------|------|-------------|
+| `SUBSCRIBE` | `setCallback()` called | Immediate — load initial data |
+| `CHANGED_PARAMS` | Client calls `setParams()` | Params changed — reload with new params |
+| `DELAYED_TASK` | Timer fires | Periodic polling — refresh data |
+
+**TopicPayload — scoped per-topic key-value store:**
+
+```java
+topic.payload().set("items", data);    // scoped to this topic
+topic.payload().set("count", 42.0);
+topic.payload().get("items");          // read back
+topic.payload().keys();                // ["items", "count"]
+topic.payload().clear("items");        // remove one key
+topic.payload().clear();               // remove all keys
+```
+
+Each topic gets its own isolated payload. No key collisions between topics.
 
 ---
 
@@ -219,25 +332,51 @@ server.onTopicSubscribe((session, topic) -> {
 | `server.principal(name).clear(key)` | Remove one key |
 | `server.principal(name).clear()` | Remove all keys |
 
-### Server — Topic Modes
+### Server — Topic Modes (new API)
 
-| Event | Callback Type |
-|-------|---------------|
+| Method | Description |
+|--------|-------------|
+| `server.topic().onSubscribe(cb)` | `BiConsumer<DanWebSocketSession, TopicHandle>` |
+| `server.topic().onUnsubscribe(cb)` | `BiConsumer<DanWebSocketSession, TopicHandle>` |
+
+**TopicHandle (received in callbacks):**
+
+| Method | Description |
+|--------|-------------|
+| `topic.name()` | Topic name |
+| `topic.params()` | Client-provided params `Map<String, Object>` |
+| `topic.payload()` | `TopicPayload` — scoped data store |
+| `topic.setCallback(fn)` | Set callback for all events (fires SUBSCRIBE immediately) |
+| `topic.setDelayedTask(ms)` | Start periodic polling timer |
+| `topic.clearDelayedTask()` | Stop timer |
+
+**TopicPayload (topic.payload()):**
+
+| Method | Description |
+|--------|-------------|
+| `payload.set(key, value)` | Set scoped value (auto-syncs to client) |
+| `payload.get(key)` | Read value |
+| `payload.keys()` | All keys in this payload |
+| `payload.clear(key)` | Remove one key |
+| `payload.clear()` | Remove all keys |
+
+**Backward-compatible callbacks (still work):**
+
+| Method | Description |
+|--------|-------------|
 | `server.onTopicSubscribe(cb)` | `BiConsumer<DanWebSocketSession, TopicInfo>` |
 | `server.onTopicUnsubscribe(cb)` | `BiConsumer<DanWebSocketSession, String>` |
 | `server.onTopicParamsChange(cb)` | `BiConsumer<DanWebSocketSession, TopicInfo>` |
 
-**Session (in topic modes):**
+**Session (flat data, backward-compatible):**
 
 | Method | Description |
 |--------|-------------|
-| `session.set(key, value)` | Push data to this session only |
+| `session.set(key, value)` | Push flat data to this session |
 | `session.get(key)` | Read current value |
 | `session.keys()` | List keys |
 | `session.clearKey(key)` | Remove one key |
 | `session.clearKey()` | Remove all keys |
-| `session.topics()` | List subscribed topic names |
-| `session.topic(name)` | Get `TopicInfo`: `name()`, `params()` |
 | `session.principal()` | Principal name (SESSION_PRINCIPAL_TOPIC only) |
 
 ### Client
@@ -261,12 +400,22 @@ server.onTopicSubscribe((session, topic) -> {
 | `client.unsubscribe(name)` | Unsubscribe |
 | `client.setParams(name, params)` | Update params |
 | `client.topics()` | List subscribed topics |
+| `client.topic(name)` | Get `TopicClientHandle` for scoped access |
+
+**TopicClientHandle (client.topic(name)):**
+
+| Method | Description |
+|--------|-------------|
+| `handle.get(key)` | Get scoped value |
+| `handle.keys()` | List keys in this topic |
+| `handle.onReceive(cb)` | `BiConsumer<String, Object>` — per-key callback |
+| `handle.onUpdate(cb)` | `Consumer<TopicClientPayloadView>` — full payload view |
 
 | Event | Callback Type |
 |-------|--------------|
 | `client.onConnect(cb)` | `Runnable` |
 | `client.onReady(cb)` | `Runnable` |
-| `client.onReceive(cb)` | `BiConsumer<String, Object>` |
+| `client.onReceive(cb)` | `BiConsumer<String, Object>` — global (non-topic keys) |
 | `client.onDisconnect(cb)` | `Runnable` |
 | `client.onError(cb)` | `Consumer<DanWSException>` |
 

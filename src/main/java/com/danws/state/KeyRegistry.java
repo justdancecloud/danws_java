@@ -13,7 +13,17 @@ public class KeyRegistry {
 
     private final Map<Integer, KeyEntry> byId = new LinkedHashMap<>();
     private final Map<String, KeyEntry> byPath = new LinkedHashMap<>();
-    private int nextId = 1;
+    private final int initialNextId;
+    private int nextId;
+
+    public KeyRegistry() {
+        this(1);
+    }
+
+    public KeyRegistry(int startingNextId) {
+        this.initialNextId = startingNextId;
+        this.nextId = startingNextId;
+    }
 
     public static void validateKeyPath(String path) {
         if (path == null || path.isEmpty()) {
@@ -62,6 +72,6 @@ public class KeyRegistry {
     public void clear() {
         byId.clear();
         byPath.clear();
-        nextId = 1;
+        nextId = initialNextId;
     }
 }

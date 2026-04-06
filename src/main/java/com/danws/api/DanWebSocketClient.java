@@ -12,10 +12,14 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class DanWebSocketClient {
 
     public enum State { DISCONNECTED, CONNECTING, IDENTIFYING, AUTHORIZING, SYNCHRONIZING, READY, RECONNECTING }
+
+    private static final Pattern TOPIC_WIRE_PATTERN = Pattern.compile("^t\\.(\\d+)\\.(.+)$");
 
     private final String id;
     private final URI url;
@@ -28,11 +32,15 @@ public class DanWebSocketClient {
 
     // Topic state
     private final Map<String, Map<String, Object>> subscriptions = new LinkedHashMap<>();
+    private final Map<String, TopicClientHandle> topicClientHandles = new LinkedHashMap<>();
+    private final Map<String, Integer> topicIndexMap = new LinkedHashMap<>();
+    private final Map<Integer, String> indexToTopic = new LinkedHashMap<>();
 
     private final List<Runnable> onConnect = new ArrayList<>();
     private final List<Runnable> onDisconnect = new ArrayList<>();
     private final List<Runnable> onReady = new ArrayList<>();
     private final List<BiConsumer<String, Object>> onReceive = new ArrayList<>();
+    private final List<Consumer<TopicClientPayloadView>> onUpdate = new ArrayList<>();
     private final List<Runnable> onReconnect = new ArrayList<>();
     private final List<Runnable> onReconnectFailed = new ArrayList<>();
     private final List<Consumer<DanWSException>> onError = new ArrayList<>();
@@ -106,12 +114,22 @@ public class DanWebSocketClient {
         return new ArrayList<>(subscriptions.keySet());
     }
 
+    public TopicClientHandle topic(String name) {
+        return topicClientHandles.computeIfAbsent(name, n -> {
+            TopicClientHandle h = new TopicClientHandle(n, this);
+            Integer idx = topicIndexMap.get(n);
+            if (idx != null) h.setIndex(idx);
+            return h;
+        });
+    }
+
     // ---- Event registration ----
 
     public void onConnect(Runnable cb) { onConnect.add(cb); }
     public void onDisconnect(Runnable cb) { onDisconnect.add(cb); }
     public void onReady(Runnable cb) { onReady.add(cb); }
     public void onReceive(BiConsumer<String, Object> cb) { onReceive.add(cb); }
+    public void onUpdate(Consumer<TopicClientPayloadView> cb) { onUpdate.add(cb); }
     public void onReconnect(Runnable cb) { onReconnect.add(cb); }
     public void onReconnectFailed(Runnable cb) { onReconnectFailed.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
@@ -164,7 +182,6 @@ public class DanWebSocketClient {
                 if (state == State.IDENTIFYING) state = State.SYNCHRONIZING;
                 sendFrame(Frame.signal(FrameType.CLIENT_READY));
 
-                // No keys registered → go ready immediately
                 if (registry.size() == 0) {
                     state = State.READY;
                     onReady.forEach(Runnable::run);
@@ -180,7 +197,20 @@ public class DanWebSocketClient {
                 store.put(frame.keyId(), frame.payload());
                 KeyEntry entry = registry.getByKeyId(frame.keyId());
                 if (entry != null) {
-                    for (var cb : onReceive) { try { cb.accept(entry.path(), frame.payload()); } catch (Exception ignored) {} }
+                    String path = entry.path();
+                    Matcher m = TOPIC_WIRE_PATTERN.matcher(path);
+                    if (m.matches()) {
+                        int idx = Integer.parseInt(m.group(1));
+                        String key = m.group(2);
+                        String topicName = indexToTopic.get(idx);
+                        if (topicName != null) {
+                            TopicClientHandle handle = topicClientHandles.get(topicName);
+                            if (handle != null) handle.notify(key, frame.payload());
+                        }
+                    } else {
+                        // Global key
+                        for (var cb : onReceive) { try { cb.accept(path, frame.payload()); } catch (Exception ignored) {} }
+                    }
                 }
                 if (state == State.SYNCHRONIZING) {
                     state = State.READY;
@@ -205,15 +235,25 @@ public class DanWebSocketClient {
     private void sendTopicSync() {
         if (ws == null || !ws.isOpen()) return;
 
-        // Build flat key-value entries
         List<String> paths = new ArrayList<>();
         List<Object> values = new ArrayList<>();
         List<DataType> types = new ArrayList<>();
 
+        topicIndexMap.clear();
+        indexToTopic.clear();
+
         int idx = 0;
         for (var entry : subscriptions.entrySet()) {
+            String topicName = entry.getKey();
+            topicIndexMap.put(topicName, idx);
+            indexToTopic.put(idx, topicName);
+
+            // Update existing handle's index
+            TopicClientHandle handle = topicClientHandles.get(topicName);
+            if (handle != null) handle.setIndex(idx);
+
             paths.add("topic." + idx + ".name");
-            values.add(entry.getKey());
+            values.add(topicName);
             types.add(DataType.STRING);
 
             for (var param : entry.getValue().entrySet()) {
@@ -224,20 +264,16 @@ public class DanWebSocketClient {
             idx++;
         }
 
-        // ClientReset
         sendFrame(Frame.signal(FrameType.CLIENT_RESET));
 
-        // ClientKeyRegistration
         for (int i = 0; i < paths.size(); i++) {
             sendFrame(new Frame(FrameType.CLIENT_KEY_REGISTRATION, i + 1, types.get(i), paths.get(i)));
         }
 
-        // ClientValue (BEFORE sync!)
         for (int i = 0; i < values.size(); i++) {
             sendFrame(new Frame(FrameType.CLIENT_VALUE, i + 1, types.get(i), values.get(i)));
         }
 
-        // ClientSync
         sendFrame(Frame.signal(FrameType.CLIENT_SYNC));
     }
 
