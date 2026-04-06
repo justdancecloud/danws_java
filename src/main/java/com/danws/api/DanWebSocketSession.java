@@ -37,6 +37,7 @@ public class DanWebSocketSession {
     private Consumer<Frame> sessionEnqueue;
     private boolean sessionBound;
     private final Map<String, Set<String>> flattenedKeys = new java.util.HashMap<>();
+    private final Map<String, List<Object>> previousArrays = new java.util.HashMap<>();
 
     // Topic handles
     private final Map<String, TopicHandle> topicHandles = new LinkedHashMap<>();
@@ -76,14 +77,34 @@ public class DanWebSocketSession {
             throw new DanWSException("INVALID_MODE", "session.set() is only available in topic modes.");
         }
         if (Flatten.shouldFlatten(value)) {
+            // Array shift detection for List values
+            if (value instanceof List<?> newArr) {
+                List<Object> oldArr = previousArrays.get(key);
+                if (oldArr != null && !oldArr.isEmpty() && !newArr.isEmpty()) {
+                    int[] shift = detectSessionArrayShiftBoth(oldArr, newArr);
+                    if (shift[0] == 1) { // left
+                        applySessionArrayShiftLeft(key, oldArr, newArr, shift[1]);
+                        return;
+                    }
+                    if (shift[0] == 2) { // right
+                        applySessionArrayShiftRight(key, oldArr, newArr, shift[1]);
+                        return;
+                    }
+                }
+                previousArrays.put(key, new java.util.ArrayList<>(newArr));
+            }
+
             Map<String, Object> flattened = Flatten.flatten(key, value);
             Set<String> newKeys = flattened.keySet();
             Set<String> oldKeys = flattenedKeys.get(key);
+            boolean needsResync = false;
             if (oldKeys != null) {
                 for (String oldPath : oldKeys) {
                     if (!newKeys.contains(oldPath)) {
+                        if (isArrayIndexKey(key, oldPath)) continue; // stale array index — client uses .length
                         KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(oldPath);
                         if (entry != null) { sessionRegistry.remove(oldPath); sessionStore.remove(entry.keyId()); }
+                        needsResync = true;
                     }
                 }
             }
@@ -91,10 +112,129 @@ public class DanWebSocketSession {
             for (var entry : flattened.entrySet()) {
                 setLeaf(entry.getKey(), entry.getValue());
             }
-            triggerSessionResync();
+            if (needsResync) triggerSessionResync();
             return;
         }
         setLeaf(key, value);
+    }
+
+    private int[] detectSessionArrayShiftBoth(List<Object> oldArr, List<?> newArr) {
+        int oldLen = oldArr.size();
+        int newLen = newArr.size();
+
+        // 1. Left shift: find new[0] in oldArr → gives shift amount k
+        Object newFirst = newArr.get(0);
+        for (int k = 1; k < oldLen; k++) {
+            if (!Objects.equals(oldArr.get(k), newFirst)) continue;
+            int matchLen = Math.min(oldLen - k, newLen);
+            if (matchLen <= 0) continue;
+            boolean match = true;
+            for (int i = 1; i < matchLen; i++) {
+                if (!Objects.equals(oldArr.get(i + k), newArr.get(i))) { match = false; break; }
+            }
+            if (match) return new int[]{1, k};
+        }
+
+        // 2. Right shift: find old[0] in newArr → gives shift amount k
+        Object oldFirst = oldArr.get(0);
+        for (int k = 1; k < newLen; k++) {
+            if (!Objects.equals(newArr.get(k), oldFirst)) continue;
+            int matchLen = Math.min(oldLen, newLen - k);
+            if (matchLen <= 0) continue;
+            boolean match = true;
+            for (int i = 1; i < matchLen; i++) {
+                if (!Objects.equals(oldArr.get(i), newArr.get(i + k))) { match = false; break; }
+            }
+            if (match) return new int[]{2, k};
+        }
+
+        return new int[]{0, 0};
+    }
+
+    private void applySessionArrayShiftLeft(String key, List<Object> oldArr, List<?> newArr, int shiftCount) {
+        int oldLen = oldArr.size();
+        int newLen = newArr.size();
+
+        // 1. Send ARRAY_SHIFT_LEFT frame
+        KeyRegistry.KeyEntry lengthEntry = sessionRegistry.getByPath(key + ".length");
+        if (lengthEntry != null && sessionEnqueue != null) {
+            sessionEnqueue.accept(new Frame(FrameType.ARRAY_SHIFT_LEFT, lengthEntry.keyId(), DataType.INT32, shiftCount));
+        }
+
+        // 2. Silently update internal store for shifted indices (low to high)
+        for (int i = 0; i < newLen && i < oldLen - shiftCount; i++) {
+            KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(key + "." + i);
+            if (entry != null) {
+                sessionStore.put(entry.keyId(), newArr.get(i));
+            }
+        }
+
+        // 3. Send new tail elements
+        int existingAfterShift = oldLen - shiftCount;
+        for (int i = existingAfterShift; i < newLen; i++) {
+            Object elem = newArr.get(i);
+            if (Flatten.shouldFlatten(elem)) {
+                Map<String, Object> elemFlat = Flatten.flatten(key + "." + i, elem);
+                for (var e : elemFlat.entrySet()) setLeaf(e.getKey(), e.getValue());
+            } else {
+                setLeaf(key + "." + i, elem);
+            }
+        }
+
+        // 4. Update length if changed
+        if (newLen != oldLen) {
+            setLeaf(key + ".length", (double) newLen);
+        }
+
+        // 5. Update flattenedKeys
+        Map<String, Object> flattened = Flatten.flatten(key, newArr);
+        flattenedKeys.put(key, new java.util.HashSet<>(flattened.keySet()));
+
+        // 6. Update previousArrays
+        previousArrays.put(key, new java.util.ArrayList<>(newArr));
+    }
+
+    private void applySessionArrayShiftRight(String key, List<Object> oldArr, List<?> newArr, int shiftCount) {
+        int oldLen = oldArr.size();
+        int newLen = newArr.size();
+
+        // 1. Send ARRAY_SHIFT_RIGHT frame
+        KeyRegistry.KeyEntry lengthEntry = sessionRegistry.getByPath(key + ".length");
+        if (lengthEntry != null && sessionEnqueue != null) {
+            sessionEnqueue.accept(new Frame(FrameType.ARRAY_SHIFT_RIGHT, lengthEntry.keyId(), DataType.INT32, shiftCount));
+        }
+
+        // 2. Silently update internal store for shifted indices (high to low)
+        for (int i = oldLen - 1; i >= 0; i--) {
+            KeyRegistry.KeyEntry srcEntry = sessionRegistry.getByPath(key + "." + i);
+            KeyRegistry.KeyEntry dstEntry = sessionRegistry.getByPath(key + "." + (i + shiftCount));
+            if (srcEntry != null && dstEntry != null) {
+                sessionStore.put(dstEntry.keyId(), oldArr.get(i));
+            }
+        }
+
+        // 3. Send new head elements (indices 0..shiftCount-1)
+        for (int i = 0; i < shiftCount; i++) {
+            Object elem = newArr.get(i);
+            if (Flatten.shouldFlatten(elem)) {
+                Map<String, Object> elemFlat = Flatten.flatten(key + "." + i, elem);
+                for (var e : elemFlat.entrySet()) setLeaf(e.getKey(), e.getValue());
+            } else {
+                setLeaf(key + "." + i, elem);
+            }
+        }
+
+        // 4. Update length if changed
+        if (newLen != oldLen) {
+            setLeaf(key + ".length", (double) newLen);
+        }
+
+        // 5. Update flattenedKeys
+        Map<String, Object> flattened = Flatten.flatten(key, newArr);
+        flattenedKeys.put(key, new java.util.HashSet<>(flattened.keySet()));
+
+        // 6. Update previousArrays
+        previousArrays.put(key, new java.util.ArrayList<>(newArr));
     }
 
     private void setLeaf(String key, Object value) {
@@ -298,6 +438,15 @@ public class DanWebSocketSession {
     }
 
     // ---- Private ----
+
+    private static boolean isArrayIndexKey(String prefix, String path) {
+        if (!path.startsWith(prefix + ".")) return false;
+        String suffix = path.substring(prefix.length() + 1);
+        for (int i = 0; i < suffix.length(); i++) {
+            if (suffix.charAt(i) < '0' || suffix.charAt(i) > '9') return false;
+        }
+        return !suffix.isEmpty();
+    }
 
     private void triggerSessionResync() {
         if (sessionEnqueue == null) return;

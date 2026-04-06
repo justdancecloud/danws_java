@@ -143,6 +143,13 @@ public class DanWebSocketServer {
         getPrincipal(BROADCAST_PRINCIPAL).clear();
     }
 
+    /** Create a ring-buffer backed array for efficient sliding-window sync (broadcast mode). */
+    public ArraySync array(String key, int capacity) {
+        assertMode(Mode.BROADCAST, "array");
+        PrincipalTX ptx = getPrincipal(BROADCAST_PRINCIPAL);
+        return new ArraySync(key, capacity, ptx::set);
+    }
+
     // ---- Principal mode API ----
 
     public PrincipalTX principal(String name) {

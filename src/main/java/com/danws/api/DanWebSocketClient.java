@@ -95,6 +95,11 @@ public class DanWebSocketClient {
 
     public List<String> keys() { return registry.paths(); }
 
+    /** Get a read-only array view backed by ring buffer keys. */
+    public ArrayView array(String key) {
+        return new ArrayView(key, this::get);
+    }
+
     public void connect() {
         if (state != State.DISCONNECTED && state != State.RECONNECTING) return;
         intentionalDisconnect = false;
@@ -294,6 +299,108 @@ public class DanWebSocketClient {
                     state = State.READY;
                     onReady.forEach(Runnable::run);
                     if (!subscriptions.isEmpty()) sendTopicSync();
+                }
+            }
+            case ARRAY_SHIFT_LEFT -> {
+                // keyId refers to {array}.length — shift values LEFT by count
+                KeyEntry lengthEntry = registry.getByKeyId(frame.keyId());
+                if (lengthEntry != null) {
+                    String lengthPath = lengthEntry.path();
+                    String prefix;
+                    Matcher tm = TOPIC_WIRE_PATTERN.matcher(lengthPath);
+                    boolean isTopic = false;
+                    int topicIdx = -1;
+                    String userPrefix = null;
+                    if (tm.matches()) {
+                        isTopic = true;
+                        topicIdx = Integer.parseInt(tm.group(1));
+                        String userKey = tm.group(2);
+                        userPrefix = userKey.substring(0, userKey.length() - ".length".length());
+                        prefix = lengthPath.substring(0, lengthPath.length() - ".length".length());
+                    } else {
+                        prefix = lengthPath.substring(0, lengthPath.length() - ".length".length());
+                    }
+
+                    int shiftCount = ((Number) frame.payload()).intValue();
+                    Object currentLenObj = store.get(frame.keyId());
+                    int currentLength = currentLenObj instanceof Number n ? n.intValue() : 0;
+
+                    // Shift values left: prefix.0 <- prefix.{shift}, prefix.1 <- prefix.{shift+1}, etc.
+                    for (int i = 0; i < currentLength - shiftCount; i++) {
+                        KeyEntry src = registry.getByPath(prefix + "." + (i + shiftCount));
+                        KeyEntry dst = registry.getByPath(prefix + "." + i);
+                        if (src != null && dst != null) {
+                            store.put(dst.keyId(), store.get(src.keyId()));
+                        }
+                    }
+
+                    // Do NOT update length here — server sends length update separately if needed
+
+                    // Fire callbacks
+                    if (isTopic) {
+                        String topicName = indexToTopic.get(topicIdx);
+                        if (topicName != null) {
+                            TopicClientHandle handle = topicClientHandles.get(topicName);
+                            if (handle != null) {
+                                handle.notify(userPrefix + ".length", store.get(frame.keyId()));
+                            }
+                        }
+                    } else {
+                        for (var cb : onReceive) {
+                            try { cb.accept(prefix + ".length", store.get(frame.keyId())); } catch (Exception ignored) {}
+                        }
+                    }
+                }
+            }
+            case ARRAY_SHIFT_RIGHT -> {
+                // keyId refers to {array}.length — shift values RIGHT by count
+                KeyEntry lengthEntry = registry.getByKeyId(frame.keyId());
+                if (lengthEntry != null) {
+                    String lengthPath = lengthEntry.path();
+                    String prefix;
+                    Matcher tm = TOPIC_WIRE_PATTERN.matcher(lengthPath);
+                    boolean isTopic = false;
+                    int topicIdx = -1;
+                    String userPrefix = null;
+                    if (tm.matches()) {
+                        isTopic = true;
+                        topicIdx = Integer.parseInt(tm.group(1));
+                        String userKey = tm.group(2);
+                        userPrefix = userKey.substring(0, userKey.length() - ".length".length());
+                        prefix = lengthPath.substring(0, lengthPath.length() - ".length".length());
+                    } else {
+                        prefix = lengthPath.substring(0, lengthPath.length() - ".length".length());
+                    }
+
+                    int shiftCount = ((Number) frame.payload()).intValue();
+                    Object currentLenObj = store.get(frame.keyId());
+                    int currentLength = currentLenObj instanceof Number n ? n.intValue() : 0;
+
+                    // Shift values right: iterate from high to low to avoid overwriting
+                    for (int i = currentLength - 1; i >= 0; i--) {
+                        KeyEntry src = registry.getByPath(prefix + "." + i);
+                        KeyEntry dst = registry.getByPath(prefix + "." + (i + shiftCount));
+                        if (src != null && dst != null) {
+                            store.put(dst.keyId(), store.get(src.keyId()));
+                        }
+                    }
+
+                    // Do NOT update length here — server sends length update separately if needed
+
+                    // Fire callbacks
+                    if (isTopic) {
+                        String topicName = indexToTopic.get(topicIdx);
+                        if (topicName != null) {
+                            TopicClientHandle handle = topicClientHandles.get(topicName);
+                            if (handle != null) {
+                                handle.notify(userPrefix + ".length", store.get(frame.keyId()));
+                            }
+                        }
+                    } else {
+                        for (var cb : onReceive) {
+                            try { cb.accept(prefix + ".length", store.get(frame.keyId())); } catch (Exception ignored) {}
+                        }
+                    }
                 }
             }
             case SERVER_READY -> { /* acknowledged */ }

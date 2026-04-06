@@ -37,6 +37,11 @@ public class TopicClientHandle {
         return result;
     }
 
+    /** Get a read-only array view backed by ring buffer keys within this topic. */
+    public ArrayView array(String key) {
+        return new ArrayView(key, this::get);
+    }
+
     public void onReceive(BiConsumer<String, Object> cb) { onReceiveCbs.add(cb); }
     public void onUpdate(Consumer<TopicClientPayloadView> cb) { onUpdateCbs.add(cb); }
 

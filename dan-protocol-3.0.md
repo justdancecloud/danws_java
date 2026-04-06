@@ -1,6 +1,6 @@
-# DanProtocol v3.0 Specification
+# DanProtocol v3.2 Specification
 
-> April 2026 | Unidirectional Real-Time State Synchronization
+> April 2026 | Real-Time State Synchronization with Auto-Flatten & Array Operations
 
 ---
 
@@ -12,10 +12,11 @@ DanProtocol is a **lightweight binary protocol** designed for pushing real-time 
 
 | Decision | Why |
 |----------|-----|
-| **Server→Client only** | Simplifies protocol, reduces attack surface. Clients are pure receivers. |
-| **Binary wire format** | Minimal bandwidth. A boolean update is 9 bytes total (vs ~30+ bytes for JSON). |
+| **Binary wire format** | Minimal bandwidth. A boolean update is ~13 bytes total (vs ~30+ bytes for JSON). |
 | **DLE-based framing** | Self-synchronizing frames without length prefixes. Robust on unreliable streams. |
-| **Auto-typed** | No schema declaration needed. Types are detected from values. |
+| **Auto-typed** | No schema declaration needed. 13 types detected from values. |
+| **4-byte KeyID** | Supports 4B+ unique keys for auto-flatten at scale. |
+| **Auto-flatten** | Objects/arrays expand into dot-path leaf keys at API layer. Only changed fields go on wire. |
 | **Principal-based** | State is per-authenticated-user, not per-connection. Multiple devices share one state. |
 
 ---
@@ -34,24 +35,25 @@ DanProtocol is a **lightweight binary protocol** designed for pushing real-time 
 ### 2.2 Frame Layout
 
 ```
-┌────────┬────────┬───────────┬────────┬───────────┬──────────┬────────┬────────┐
-│DLE 0x10│STX 0x02│FrameType  │ KeyID  │ DataType  │ Payload  │DLE 0x10│ETX 0x03│
-│ 1 byte │ 1 byte │  1 byte   │2 bytes │  1 byte   │ N bytes  │ 1 byte │ 1 byte │
-└────────┴────────┴───────────┴────────┴───────────┴──────────┴────────┴────────┘
-                  └──────── DLE-escaped body ────────────────┘
++---------+---------+-----------+---------+----------+----------+---------+---------+
+| DLE     | STX     | FrameType | KeyID   | DataType | Payload  | DLE     | ETX     |
+| 0x10    | 0x02    | 1 byte    | 4 bytes | 1 byte   | N bytes  | 0x10    | 0x03    |
++---------+---------+-----------+---------+----------+----------+---------+---------+
+                    |<---------- DLE-escaped body ------------>|
 ```
 
 - **All multi-byte numbers**: Big Endian (network byte order)
-- **Minimum frame**: 8 bytes (signal frame, no payload)
+- **KeyID**: 4 bytes unsigned (0x00000000 ~ 0xFFFFFFFF)
+- **Minimum frame**: 10 bytes (signal frame: 2 framing + 6 body + 2 framing)
 - **DLE escaping**: Any `0x10` in the body becomes `0x10 0x10`
 
 ### 2.3 Heartbeat (not a frame)
 
 ```
-┌────────┬────────┐
-│DLE 0x10│ENQ 0x05│
-│ 1 byte │ 1 byte │
-└────────┴────────┘
++---------+---------+
+| DLE     | ENQ     |
+| 0x10    | 0x05    |
++---------+---------+
 ```
 
 Sent every 10 seconds by both sides. If not received within 15 seconds, the connection is considered dead.
@@ -60,36 +62,143 @@ Sent every 10 seconds by both sides. If not received within 15 seconds, the conn
 
 ## 3. Frame Types
 
-### 3.1 Data Frames
+### 3.1 Server to Client -- Data
+
+| Code | Name | Payload |
+|------|------|---------|
+| `0x00` | ServerKeyRegistration | UTF-8 keyPath |
+| `0x01` | ServerValue | Typed value |
+
+### 3.2 Client to Server -- Data (Topic Mode)
+
+| Code | Name | Payload |
+|------|------|---------|
+| `0x02` | ClientKeyRegistration | UTF-8 keyPath |
+| `0x03` | ClientValue | Typed value |
+
+### 3.3 Handshake
 
 | Code | Name | Direction | Payload |
 |------|------|-----------|---------|
-| `0x00` | Server Key Registration | Server→Client | UTF-8 keyPath |
-| `0x01` | Server Value | Server→Client | Typed value |
+| `0x04` | ServerSync | S->C | -- |
+| `0x05` | ClientReady | C->S | -- |
+| `0x06` | ClientSync | C->S | -- |
+| `0x07` | ServerReady | S->C | -- |
 
-### 3.2 Handshake Frames
-
-| Code | Name | Direction | Payload |
-|------|------|-----------|---------|
-| `0x04` | Server SYNC | Server→Client | — |
-| `0x05` | Client READY | Client→Server | — |
-
-### 3.3 Control Frames
+### 3.4 Control
 
 | Code | Name | Direction | Payload |
 |------|------|-----------|---------|
 | `0x08` | Error | Both | UTF-8 message |
-| `0x09` | Server RESET | Server→Client | — |
-| `0x0A` | Client RESYNC_REQ | Client→Server | — |
+| `0x09` | ServerReset | S->C | -- |
+| `0x0A` | ClientResyncReq | C->S | -- |
+| `0x0B` | ClientReset | C->S | -- |
+| `0x0C` | ServerResyncReq | S->C | -- |
 
-### 3.4 Authentication Frames
+### 3.5 Authentication
 
 | Code | Name | Direction | Payload |
 |------|------|-----------|---------|
-| `0x0D` | IDENTIFY | Client→Server | 16 bytes UUIDv7 |
-| `0x0E` | AUTH | Client→Server | UTF-8 token |
-| `0x0F` | AUTH_OK | Server→Client | — |
-| `0x10` | AUTH_FAIL | Server→Client | UTF-8 reason |
+| `0x0D` | Identify | C->S | 16 bytes UUIDv7 |
+| `0x0E` | Auth | C->S | UTF-8 token |
+| `0x0F` | AuthOk | S->C | -- |
+| `0x11` | AuthFail | S->C | UTF-8 reason |
+
+> **Note**: `0x10` is reserved (DLE control character). AuthFail uses `0x11` to avoid collision.
+
+### 3.6 Array Operations
+
+| Code | Name | Direction | Payload |
+|------|------|-----------|---------|
+| `0x20` | ARRAY_SHIFT_LEFT | S->C | Int32 shift count |
+| `0x21` | ARRAY_SHIFT_RIGHT | S->C | Int32 shift count |
+
+#### ARRAY_SHIFT_LEFT (0x20)
+
+Used to optimize array left-shift patterns (e.g., sliding window: `[1,2,3,4,5]` -> `[2,3,4,5,6]`). Instead of re-sending all shifted element values, the server sends a single ARRAY_SHIFT_LEFT frame.
+
+- **KeyID**: keyId of `{arrayKey}.length` (identifies which array)
+- **DataType**: Int32 (0x06)
+- **Payload**: shift count as int32 (4 bytes) -- how many elements shifted off the front
+
+**Client action on receiving ARRAY_SHIFT_LEFT(keyId=lengthKeyId, payload=k):**
+
+1. Look up the path for `lengthKeyId` (e.g., `data.length`)
+2. Derive the array prefix (e.g., `data`)
+3. Read current length from store
+4. For `i` from `0` to `length - k - 1`: copy value at `{prefix}.{i+k}` to `{prefix}.{i}`
+5. Update length to `length - k`
+6. Fire callbacks for `{prefix}.length`
+
+#### ARRAY_SHIFT_RIGHT (0x21)
+
+Used to optimize array right-shift patterns (e.g., prepend: `[1,2,3,4,5]` -> `[0,1,2,3,4,5]`). Instead of re-sending all shifted element values, the server sends a single ARRAY_SHIFT_RIGHT frame.
+
+- **KeyID**: keyId of `{arrayKey}.length` (identifies which array)
+- **DataType**: Int32 (0x06)
+- **Payload**: shift count as int32 (4 bytes) -- how many positions to shift right
+
+**Client action on receiving ARRAY_SHIFT_RIGHT(keyId=lengthKeyId, payload=k):**
+
+1. Look up the path for `lengthKeyId` (e.g., `data.length`)
+2. Derive the array prefix (e.g., `data`)
+3. Read current length from store
+4. For `i` from `length - 1` down to `0`: copy value at `{prefix}.{i}` to `{prefix}.{i+k}`
+5. Do NOT update length (server sends new head elements + length update separately)
+6. Fire callbacks for `{prefix}.length`
+
+#### Server-Side Array Diff Detection Algorithm
+
+When `set(key, array)` is called and a previous array exists for that key, the server compares old and new arrays to detect shift patterns:
+
+**Left shift detection:**
+
+1. Take `newArr[0]` and search for it in `oldArr` at positions 1..N
+2. When found at position `k`, verify: `oldArr[k..k+matchLen]` == `newArr[0..matchLen]`
+3. If verified: shift count = `k`
+4. Action: send `ARRAY_SHIFT_LEFT(k)` + new tail elements (beyond what shifted from old) + length update if changed
+
+**Right shift detection:**
+
+1. Take `oldArr[0]` and search for it in `newArr` at positions 1..N
+2. When found at position `k`, verify: `oldArr[0..matchLen]` == `newArr[k..k+matchLen]`
+3. If verified: shift count = `k`
+4. Action: send `ARRAY_SHIFT_RIGHT(k)` + new head elements (indices 0..k-1) + length update if changed
+
+**Fallback:**
+
+If no shift pattern detected, fall through to normal flatten (field-level dedup handles unchanged elements).
+
+This optimization reduces a shift of N elements from N value frames to 1 ARRAY_SHIFT frame + only the genuinely new elements.
+
+#### Wire Examples
+
+**Left shift by 1 on array "scores" (length keyId=0x00000005):**
+
+```
+10 02 20 00 00 00 05 06 00 00 00 01 10 03
+|  |  |  |--------|  |  |--------| |  |
+|  |  |    KeyID   |  |  payload   DLE ETX
+|  |  FrameType   DataType=Int32
+DLE STX  =0x20     =0x06         shiftCount=1
+```
+
+**Right shift by 1 on array "scores" (length keyId=0x00000005):**
+
+```
+10 02 21 00 00 00 05 06 00 00 00 01 10 03
+|  |  |  |--------|  |  |--------| |  |
+|  |  |    KeyID   |  |  payload   DLE ETX
+|  |  FrameType   DataType=Int32
+DLE STX  =0x21     =0x06         shiftCount=1
+```
+
+**Left shift by 3:**
+
+```
+10 02 20 00 00 00 05 06 00 00 00 03 10 03
+                                ^^ shiftCount=3
+```
 
 ---
 
@@ -101,13 +210,13 @@ Types are auto-detected from application values. No explicit declaration needed.
 |------|------|------|----------------|
 | `0x00` | Null | 0 | `null` |
 | `0x01` | Bool | 1 | `boolean` / `Boolean` |
-| `0x02` | Uint8 | 1 | — |
-| `0x03` | Uint16 | 2 | — |
-| `0x04` | Uint32 | 4 | — / `Integer` |
+| `0x02` | Uint8 | 1 | -- / `Byte` |
+| `0x03` | Uint16 | 2 | -- |
+| `0x04` | Uint32 | 4 | -- / `Integer` |
 | `0x05` | Uint64 | 8 | `bigint` / `Long` |
-| `0x06` | Int32 | 4 | — / `Integer` |
+| `0x06` | Int32 | 4 | -- / `Integer` |
 | `0x07` | Int64 | 8 | `bigint` / `Long` |
-| `0x08` | Float32 | 4 | — / `Float` |
+| `0x08` | Float32 | 4 | -- / `Float` |
 | `0x09` | Float64 | 8 | `number` / `Double` |
 | `0x0A` | String | var | `string` / `String` |
 | `0x0B` | Binary | var | `Uint8Array` / `byte[]` |
@@ -115,26 +224,28 @@ Types are auto-detected from application values. No explicit declaration needed.
 
 ### Auto-Detection Rules
 
-| Value | → Wire Type |
-|-------|-------------|
+| Value | Wire Type |
+|-------|-----------|
 | `null` | Null |
 | `true` / `false` | Bool |
 | JS `number` / Java `Double` | Float64 |
 | Java `Integer` | Int32 |
 | Java `Float` | Float32 |
-| JS `bigint` ≥ 0 / Java `Long` ≥ 0 | Uint64 |
+| JS `bigint` >= 0 / Java `Long` >= 0 | Uint64 |
 | JS `bigint` < 0 / Java `Long` < 0 | Int64 |
 | `string` / `String` | String |
 | `Uint8Array` / `byte[]` | Binary |
 | `Date` | Timestamp |
+| Java `BigDecimal` | Float64 |
+| Java `BigInteger` (< 64 bits) | Int64 |
+| Java `BigInteger` (>= 64 bits) | String |
+| Java `Short` | Int32 |
+| Java `Byte` | Uint8 |
+| `{ ... }` / `[...]` (object/array) | **Auto-flatten** (API layer, not a wire type) |
 
 ---
 
 ## 5. DLE Escaping
-
-### Why?
-
-DLE (`0x10`) is the escape character. The parser treats `0x10` as a control prefix, never as data. If payload data contains `0x10`, it must be doubled.
 
 ### Rules
 
@@ -146,102 +257,141 @@ DLE (`0x10`) is the escape character. The parser treats `0x10` as a control pref
 | `0x10 0x10` | Literal `0x10` in data |
 | `0x10 [other]` | Protocol error |
 
-### Example
-
-Payload `48 10 65` (contains `0x10`):
-- Encoded: `48 10 10 65`
-- Parser reads: `48` → data, `10 10` → literal `0x10`, `65` → data
-- Decoded: `48 10 65` (original restored)
+The entire frame body (FrameType + KeyID + DataType + Payload) is DLE-escaped.
 
 ---
 
-## 6. Protocol Flows
+## 6. Auto-Flatten (API Layer)
 
-### 6.1 Connection (No Auth)
+Objects and arrays are expanded into dot-path leaf keys before going on the wire. This is handled at the API layer, not the protocol layer -- the wire only carries primitive leaf values.
+
+### Expansion Rules
+
+| Input | Expanded Keys |
+|-------|---------------|
+| `set("user", { name: "Alice", age: 30 })` | `user.name` = "Alice", `user.age` = 30 |
+| `set("scores", [10, 20, 30])` | `scores.0` = 10, `scores.1` = 20, `scores.2` = 30, `scores.length` = 3 |
+| `set("data", { items: [{ id: 1 }] })` | `data.items.length` = 1, `data.items.0.id` = 1 |
+
+- Arrays get an automatic `.length` key
+- Nested objects flatten recursively (max depth: 10)
+- Circular references are detected and rejected
+- When an array shrinks, leftover keys are automatically removed
+- Unchanged leaf values are not re-transmitted (field-level dedup)
+
+### Topic Mode Wire Prefix
+
+In topic modes, each topic's payload keys are prefixed with `t.<index>.`:
+
+```
+topic "board" (index=0): t.0.items.length, t.0.items.0.title, ...
+topic "chart" (index=1): t.1.value, t.1.timestamp, ...
+```
+
+Client->Server topic subscriptions use `topic.<index>.name` and `topic.<index>.param.<key>` encoding.
+
+---
+
+## 7. Protocol Flows
+
+### 7.1 Connection (No Auth)
 
 ```
 Client                         Server
-  │                               │
-  │── IDENTIFY (UUIDv7) ────────▶│  Create session
-  │                               │
-  │◀── Key Reg (key1, float64) ──│  ┐
-  │◀── Key Reg (key2, string)  ──│  │ Register keys
-  │◀── Server SYNC ──────────────│  ┘
-  │                               │
-  │── Client READY ──────────────▶│
-  │                               │
-  │◀── Value (key1 = 23.5) ──────│  ┐ Full state sync
-  │◀── Value (key2 = "hello") ───│  ┘
-  │                               │
-  │◀── Value (key1 = 24.1) ──────│  Live updates...
+  |                               |
+  |-- IDENTIFY (UUIDv7) -------->|  Create session
+  |                               |
+  |<-- Key Reg (key1, float64) --|  Register keys
+  |<-- Key Reg (key2, string)  --|
+  |<-- Server SYNC --------------|
+  |                               |
+  |-- Client READY ------------->|
+  |                               |
+  |<-- Value (key1 = 23.5) ------|  Full state sync
+  |<-- Value (key2 = "hello") ---|
+  |                               |
+  |<-- Value (key1 = 24.1) ------|  Live updates...
 ```
 
-### 6.2 Connection (With Auth)
+### 7.2 Connection (With Auth)
 
 ```
 Client                         Server
-  │                               │
-  │── IDENTIFY (UUIDv7) ────────▶│  → tmpSessions
-  │── AUTH (token) ──────────────▶│  → verify → determine principal
-  │◀── AUTH_OK ──────────────────│  → bind to principal
-  │                               │
-  │◀── Key Reg ... ──────────────│  (same as above)
-  │◀── Server SYNC ──────────────│
-  │── Client READY ──────────────▶│
-  │◀── Values ... ───────────────│
+  |                               |
+  |-- IDENTIFY (UUIDv7) -------->|
+  |-- AUTH (token) ------------->|  verify + determine principal
+  |<-- AUTH_OK ------------------|  bind to principal
+  |                               |
+  |<-- Key Reg ... --------------|
+  |<-- Server SYNC --------------|
+  |-- Client READY ------------->|
+  |<-- Values ... ---------------|
 ```
 
-### 6.3 Dynamic Key Addition
-
-When `set()` is called with a new key:
+### 7.3 Topic Subscription (Topic Modes)
 
 ```
-Server                         Client
-  │                               │
-  │── Server RESET ──────────────▶│  Discard all keys
-  │── Key Reg (all current) ────▶│  Re-register
-  │── Server SYNC ──────────────▶│
-  │                               │
-  │◀── Client READY ─────────────│
-  │── Values (all current) ─────▶│  Full resync
+Client                         Server
+  |                               |
+  |-- ClientReset -------------->|  Clear previous topic state
+  |-- ClientKeyReg (topic.0.name, ...) ->|
+  |-- ClientValue (topic.0.name = "board") ->|
+  |-- ClientSync --------------->|  Process topic diff
+  |                               |
+  |<-- ServerReset --------------|  Full state rebuild
+  |<-- Key Reg (t.0.items.0.title, ...) -|
+  |<-- Server SYNC --------------|
+  |-- Client READY ------------->|
+  |<-- Values ... ---------------|
 ```
 
-### 6.4 Recovery
+### 7.4 Recovery
 
 If client receives a value for an unknown key:
 
 ```
 Client                         Server
-  │── Client RESYNC_REQ ────────▶│
-  │                               │
-  │◀── Server RESET ─────────────│
-  │◀── Key Reg (all) ───────────│
-  │◀── Server SYNC ─────────────│
-  │── Client READY ─────────────▶│
-  │◀── Values (all) ────────────│
+  |-- Client RESYNC_REQ ------->|
+  |<-- Server RESET ------------|
+  |<-- Key Reg (all) ----------|
+  |<-- Server SYNC -------------|
+  |-- Client READY ------------->|
+  |<-- Values (all) ------------|
+```
+
+### 7.5 Array Shift Flow
+
+When the server detects an array shift pattern:
+
+```
+Server                         Client
+  |                               |
+  |-- ARRAY_SHIFT_LEFT(k) ----->|  Client shifts local array left by k
+  |-- Value (new tail elems) --->|  Only genuinely new elements
+  |-- Value (length update) ---->|  Length if changed
+  |                               |
 ```
 
 ---
 
-## 7. Batch Framing
+## 8. Batch Framing
 
 Multiple frames can be concatenated in one transport message:
 
 ```
 [DLE STX ... DLE ETX][DLE STX ... DLE ETX][DLE STX ... DLE ETX]
-└───── frame 1 ─────┘└───── frame 2 ─────┘└───── frame 3 ─────┘
 ```
 
 The bulk queue batches frames every **100ms** and sends them as one message. Value frames for the same key are **deduplicated** within the window (only the latest value is sent).
 
 ---
 
-## 8. KeyPath Convention
+## 9. KeyPath Convention
 
 ```
-sensor.temperature       ← dot-separated segments
-root.users.0.name        ← numeric segments = array indices
-input.joystick.x         ← any depth
+sensor.temperature       -- dot-separated segments
+root.users.0.name        -- numeric segments = array indices
+t.0.items.3.title        -- topic wire prefix
 ```
 
 Rules:
@@ -249,41 +399,47 @@ Rules:
 - Separator: `.`
 - Max length: 200 bytes (UTF-8)
 - No leading/trailing/consecutive dots
-- No spaces
 
 ---
 
-## 9. Wire Examples
+## 10. Wire Examples (4-byte KeyID)
 
-### Bool value `true` for Key ID 0x0001
-
-```
-10 02 01 00 01 01 01 10 03
-│  │  │  └──┘  │  │  │  │
-│  │  │  KeyID │  │  DLE ETX
-│  │  FrameType  │  payload: 0x01 = true
-DLE STX  =0x01   DataType=0x01 (bool)
-```
-
-### Signal frame (Server SYNC)
+### Bool value `true` for KeyID 0x00000001
 
 ```
-10 02 04 00 00 00 10 03     (8 bytes, no payload)
+10 02 01 00 00 00 01 01 01 10 03
+|  |  |  |--------|  |  |  |  |
+|  |  |    KeyID   |  |  DLE ETX
+|  |  FrameType   DataType
+DLE STX  =0x01    =0x01(bool)  payload: 0x01=true
 ```
 
-### String "Alice" for Key ID 0x0002
+### Signal frame (Server SYNC, KeyID=0)
 
 ```
-10 02 01 00 02 0a 41 6c 69 63 65 10 03
+10 02 04 00 00 00 00 00 10 03     (10 bytes total)
+```
+
+### String "Alice" for KeyID 0x00000002
+
+```
+10 02 01 00 00 00 02 0a 41 6c 69 63 65 10 03
+```
+
+### KeyID 0x00000010 (contains DLE byte, escaped)
+
+```
+10 02 01 00 00 00 10 10 0a ... 10 03
+              ^^^^^^^^^ 0x10 escaped to 0x10 0x10
 ```
 
 ---
 
-## 10. Implementations
+## 11. Implementations
 
 | Language | Package | Install |
 |----------|---------|---------|
 | TypeScript | [`dan-websocket`](https://www.npmjs.com/package/dan-websocket) | `npm install dan-websocket` |
-| Java | `io.github.justdancecloud:dan-websocket` | Gradle/Maven |
+| Java | [`io.github.justdancecloud:dan-websocket`](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket) | Gradle / Maven |
 
 Both implementations are **wire-compatible**: a TypeScript server can serve Java clients and vice versa.
