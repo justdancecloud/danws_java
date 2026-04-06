@@ -1,15 +1,38 @@
 # dan-websocket (Java)
 
-Lightweight binary protocol library for **real-time state synchronization** from server to client.
+> Lightweight binary protocol for real-time state synchronization — **Server to Client**
 
-Java implementation of [DanProtocol v3.0](https://github.com/justdancecloud/danws_typescript). Wire-compatible with the TypeScript version.
+Java implementation of [DanProtocol v3.0](./dan-protocol-3.0.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
 
-## Installation
+---
+
+## What is this?
+
+**dan-websocket** pushes state from your server to connected clients in real time. Instead of sending JSON over WebSocket, it uses a compact binary protocol that auto-detects types and handles reconnection, heartbeat, and recovery transparently.
+
+You just `set(key, value)` on the server. All connected clients receive it instantly.
+
+---
+
+## Why not just JSON over WebSocket?
+
+| | JSON WebSocket | dan-websocket |
+|---|---|---|
+| A boolean update | `{"key":"alive","value":true}` = 30+ bytes | 9 bytes |
+| Type safety | Parse then cast | Auto-typed on the wire |
+| Reconnection | DIY | Built-in with heartbeat |
+| Multi-device sync | DIY per-connection | Principal-based (1 state → N sessions) |
+
+---
+
+## Install
 
 ### Gradle
 
 ```groovy
-implementation 'io.github.justdancecloud:dan-websocket:0.1.0'
+dependencies {
+    implementation 'io.github.justdancecloud:dan-websocket:0.1.0'
+}
 ```
 
 ### Maven
@@ -22,49 +45,58 @@ implementation 'io.github.justdancecloud:dan-websocket:0.1.0'
 </dependency>
 ```
 
-## Two Modes
+Requires **Java 17+**.
 
-### Broadcast Mode — all clients get the same data
+---
+
+## Quick Start
+
+### 1. Broadcast Mode — all clients get the same data
+
+Perfect for dashboards, live feeds, status pages.
+
+**Server:**
 
 ```java
-var server = new DanWebSocketServer(8080, DanWebSocketServer.Mode.BROADCAST);
+import com.danws.api.DanWebSocketServer;
+import static com.danws.api.DanWebSocketServer.Mode;
 
-server.set("sensor.temp", 23.5);
-server.set("status", "online");
+var server = new DanWebSocketServer(8080, Mode.BROADCAST);
 
-server.get("sensor.temp");    // 23.5
-server.keys();                // ["sensor.temp", "status"]
-server.clear("status");       // remove one
-server.clear();               // remove all
+// Just set values. Types are auto-detected. No schema needed.
+server.set("sensor.temp", 23.5);          // Double → Float64
+server.set("sensor.status", "online");    // String → String
+server.set("sensor.active", true);        // Boolean → Bool
+server.set("sensor.updated", new Date()); // Date → Timestamp
+
+// Update a value — all connected clients get it within 100ms
+new Timer().scheduleAtFixedRate(new TimerTask() {
+    public void run() {
+        server.set("sensor.temp", 20 + Math.random() * 10);
+    }
+}, 0, 1000);
+
+// Read back, list, delete
+server.get("sensor.temp");     // 23.5
+server.keys();                 // ["sensor.temp", "sensor.status", ...]
+server.clear("sensor.active"); // remove one key
+server.clear();                // remove all keys
 ```
 
-### Individual Mode — per-user (principal) data
+**Client:**
 
 ```java
-var server = new DanWebSocketServer(8080, DanWebSocketServer.Mode.INDIVIDUAL);
+import com.danws.api.DanWebSocketClient;
 
-server.principal("alice").set("score", 100.0);
-server.principal("bob").set("score", 200.0);
-
-// Authentication
-server.enableAuthorization(true);
-server.onAuthorize((uuid, token) -> {
-    String user = verifyToken(token);
-    server.authorize(uuid, token, user); // 3rd arg = principal
-});
-```
-
-### Client
-
-```java
 var client = new DanWebSocketClient("ws://localhost:8080");
 
-client.onConnect(() -> client.authorize(getToken()));
-
+// Fires once initial sync is complete
 client.onReady(() -> {
-    System.out.println("Score: " + client.get("score"));
+    System.out.println("Temperature: " + client.get("sensor.temp"));
+    System.out.println("All keys: " + client.keys());
 });
 
+// Fires on every value update (including initial sync)
 client.onReceive((key, value) -> {
     System.out.println(key + " = " + value);
 });
@@ -72,24 +104,189 @@ client.onReceive((key, value) -> {
 client.connect();
 ```
 
-## Auto-detected Data Types
+### 2. Individual Mode — per-user data via principals
 
-| Java Type | Wire Type |
-|-----------|-----------|
-| `null` | Null |
-| `Boolean` | Bool |
-| `Integer` | Int32 |
-| `Long` | Int64 |
-| `Float` | Float32 |
-| `Double` | Float64 |
-| `String` | String |
-| `byte[]` | Binary |
-| `Date` / `Instant` | Timestamp |
+Perfect for games, user dashboards, personalized data.
 
-## Requirements
+A **principal** = one authenticated user. All their sessions (PC, mobile, other tabs) share the same state automatically.
 
-- Java 17+
-- [Java-WebSocket](https://github.com/TooTallNate/Java-WebSocket) (transitive dependency)
+**Server:**
+
+```java
+var server = new DanWebSocketServer(8080, Mode.INDIVIDUAL);
+
+// Enable authentication
+server.enableAuthorization(true);
+server.onAuthorize((uuid, token) -> {
+    String user = verifyJWT(token);
+    server.authorize(uuid, token, user);  // 3rd arg = principal name
+});
+
+// Set data per principal — no schema, just set
+server.principal("alice").set("score", 100.0);
+server.principal("alice").set("name", "Alice");
+
+server.principal("bob").set("score", 50.0);
+server.principal("bob").set("name", "Bob");
+
+// Alice opens on PC and mobile → both sessions see score=100
+// Update alice → all her sessions get it instantly
+server.principal("alice").set("score", 200.0);
+```
+
+**Client:**
+
+```java
+var client = new DanWebSocketClient("ws://localhost:8080");
+
+client.onConnect(() -> client.authorize(myJWTToken));
+
+client.onReady(() -> {
+    System.out.println("My score: " + client.get("score"));  // 100.0
+    System.out.println("My name: " + client.get("name"));    // "Alice"
+});
+
+client.onReceive((key, value) -> {
+    if ("score".equals(key)) updateScoreUI(value);
+});
+
+client.connect();
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                     SERVER                          │
+│                                                     │
+│  Broadcast Mode:                                    │
+│    server.set("temp", 23.5) ──▶ All clients         │
+│                                                     │
+│  Individual Mode:                                   │
+│    Principal "alice" ─── Shared State (1 copy)      │
+│      ├── Session (PC)     ── same data              │
+│      ├── Session (mobile) ── same data              │
+│      └── Session (tablet) ── same data              │
+│                                                     │
+│    Principal "bob" ─── Shared State (1 copy)        │
+│      └── Session (laptop) ── own data               │
+└──────────────────────┬──────────────────────────────┘
+                       │ Binary WebSocket (DanProtocol v3.0)
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│                     CLIENT                          │
+│                                                     │
+│  client.get("temp")  → 23.5                         │
+│  client.onReceive((key, val) -> ...)                │
+│  client.keys()       → ["temp", "status", ...]      │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## API Reference
+
+### Server — Broadcast Mode
+
+```java
+var server = new DanWebSocketServer(port, Mode.BROADCAST);
+```
+
+| Method | Description |
+|--------|-------------|
+| `server.set(key, value)` | Set value, auto-detect type, sync to all |
+| `server.get(key)` | Read current value (`null` if not set) |
+| `server.keys()` | All registered key paths |
+| `server.clear(key)` | Remove one key |
+| `server.clear()` | Remove all keys |
+
+### Server — Individual Mode
+
+```java
+var server = new DanWebSocketServer(port, Mode.INDIVIDUAL);
+```
+
+| Method | Description |
+|--------|-------------|
+| `server.principal(name).set(key, value)` | Set for principal |
+| `server.principal(name).get(key)` | Read value |
+| `server.principal(name).keys()` | List keys |
+| `server.principal(name).clear(key)` | Remove one key |
+| `server.principal(name).clear()` | Remove all keys |
+
+### Server — Auth & Sessions
+
+| Method | Description |
+|--------|-------------|
+| `server.enableAuthorization(enabled)` | Enable token auth |
+| `server.authorize(uuid, token, principal)` | Accept, bind to principal |
+| `server.reject(uuid, reason)` | Reject |
+| `server.onConnection(cb)` | New session: `Consumer<Session>` |
+| `server.onAuthorize(cb)` | Auth received: `BiConsumer<uuid, token>` |
+| `server.getSession(uuid)` | Get session by ID |
+| `server.getSessionsByPrincipal(name)` | All sessions for principal |
+| `server.isConnected(uuid)` | Connection status |
+| `server.close()` | Shutdown |
+
+### Client
+
+```java
+var client = new DanWebSocketClient(url);
+```
+
+| Method | Description |
+|--------|-------------|
+| `client.connect()` | Connect |
+| `client.disconnect()` | Disconnect |
+| `client.authorize(token)` | Send auth token |
+| `client.get(key)` | Current value (`null` if not received) |
+| `client.keys()` | All received key paths |
+| `client.id()` | This client's UUIDv7 |
+| `client.state()` | Connection state enum |
+
+| Event | Callback Type |
+|-------|--------------|
+| `client.onConnect(cb)` | `Runnable` |
+| `client.onReady(cb)` | `Runnable` |
+| `client.onReceive(cb)` | `BiConsumer<String, Object>` |
+| `client.onDisconnect(cb)` | `Runnable` |
+| `client.onError(cb)` | `Consumer<DanWSException>` |
+
+---
+
+## Auto-Detected Types
+
+| Java Type | Wire Type | Size |
+|-----------|-----------|------|
+| `null` | Null | 0 bytes |
+| `Boolean` | Bool | 1 byte |
+| `Integer` | Int32 | 4 bytes |
+| `Long` | Int64 / Uint64 | 8 bytes |
+| `Float` | Float32 | 4 bytes |
+| `Double` | Float64 | 8 bytes |
+| `String` | String | variable |
+| `byte[]` | Binary | variable |
+| `Date` / `Instant` | Timestamp | 8 bytes |
+
+---
+
+## Cross-Language Compatibility
+
+This Java implementation is **wire-compatible** with the [TypeScript version](https://github.com/justdancecloud/danws_typescript):
+
+- Java server ↔ TypeScript client ✅
+- TypeScript server ↔ Java client ✅
+- Same binary protocol, same frame format, same data types
+
+---
+
+## Protocol
+
+See [dan-protocol-3.0.md](./dan-protocol-3.0.md) for the full binary protocol specification.
+
+---
 
 ## License
 
