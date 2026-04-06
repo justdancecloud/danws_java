@@ -1,6 +1,7 @@
 plugins {
     id 'java-library'
     id 'maven-publish'
+    id 'signing'
 }
 
 group = 'io.github.justdancecloud'
@@ -41,17 +42,45 @@ publishing {
     publications {
         mavenJava(MavenPublication) {
             from components.java
+
             pom {
                 name = 'dan-websocket'
                 description = 'Lightweight binary protocol for real-time state synchronization'
                 url = 'https://github.com/justdancecloud/danws_java'
+
                 licenses {
                     license {
                         name = 'MIT License'
                         url = 'https://opensource.org/licenses/MIT'
                     }
                 }
+
+                developers {
+                    developer {
+                        id = 'justdancecloud'
+                        name = 'justdancecloud'
+                        email = 'justdancecloud@users.noreply.github.com'
+                    }
+                }
+
+                scm {
+                    connection = 'scm:git:git://github.com/justdancecloud/danws_java.git'
+                    developerConnection = 'scm:git:ssh://github.com/justdancecloud/danws_java.git'
+                    url = 'https://github.com/justdancecloud/danws_java'
+                }
             }
         }
     }
+
+    repositories {
+        maven {
+            name = 'local'
+            url = layout.buildDirectory.dir('repo')
+        }
+    }
+}
+
+signing {
+    useGpgCmd()
+    sign publishing.publications.mavenJava
 }
