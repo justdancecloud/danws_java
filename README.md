@@ -2,6 +2,9 @@
 
 > Lightweight binary protocol for real-time state synchronization — **Server to Client**
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.justdancecloud/dan-websocket)](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket)
+[![npm](https://img.shields.io/npm/v/dan-websocket)](https://www.npmjs.com/package/dan-websocket)
+
 Java implementation of [DanProtocol v3.0](./dan-protocol-3.0.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
 
 ---
@@ -272,13 +275,16 @@ var client = new DanWebSocketClient(url);
 
 ---
 
-## Cross-Language Compatibility
+## Cross-Language Support
 
-This Java implementation is **wire-compatible** with the [TypeScript version](https://github.com/justdancecloud/danws_typescript):
+dan-websocket is available in two languages with identical APIs and wire-compatible binary protocol:
 
-- Java server ↔ TypeScript client ✅
-- TypeScript server ↔ Java client ✅
-- Same binary protocol, same frame format, same data types
+| Language | Package | Install |
+|----------|---------|---------|
+| **TypeScript** | [`dan-websocket`](https://www.npmjs.com/package/dan-websocket) | `npm install dan-websocket` |
+| **Java** | [`io.github.justdancecloud:dan-websocket`](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket) | Gradle / Maven |
+
+A TypeScript server can serve Java clients and vice versa.
 
 ---
 
