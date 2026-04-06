@@ -34,7 +34,7 @@ You just `set(key, value)` on the server. All connected clients receive it insta
 
 ```groovy
 dependencies {
-    implementation 'io.github.justdancecloud:dan-websocket:1.0.2'
+    implementation 'io.github.justdancecloud:dan-websocket:1.0.3'
 }
 ```
 
@@ -44,7 +44,7 @@ dependencies {
 <dependency>
     <groupId>io.github.justdancecloud</groupId>
     <artifactId>dan-websocket</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 </dependency>
 ```
 

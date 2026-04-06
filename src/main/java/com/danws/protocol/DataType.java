@@ -43,6 +43,15 @@ public enum DataType {
         if (value instanceof byte[]) return BINARY;
         if (value instanceof java.util.Date) return TIMESTAMP;
         if (value instanceof java.time.Instant) return TIMESTAMP;
+        if (value instanceof java.math.BigDecimal) return FLOAT64;
+        if (value instanceof java.math.BigInteger) {
+            java.math.BigInteger bi = (java.math.BigInteger) value;
+            int bitLen = bi.bitLength();
+            if (bitLen < 64) return INT64;
+            return STRING;
+        }
+        if (value instanceof Short) return INT32;
+        if (value instanceof Byte) return UINT8;
         throw new DanWSException("INVALID_VALUE_TYPE", "Cannot detect type for: " + value.getClass().getName());
     }
 }

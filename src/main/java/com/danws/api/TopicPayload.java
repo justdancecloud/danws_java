@@ -62,8 +62,15 @@ public class TopicPayload {
         Entry existing = entries.get(key);
 
         if (existing == null) {
-            entries.put(key, new Entry(allocateKeyId.getAsInt(), newType, value));
-            return true;
+            int keyId = allocateKeyId.getAsInt();
+            entries.put(key, new Entry(keyId, newType, value));
+            if (enqueue != null) {
+                String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
+                enqueue.accept(Frame.keyRegistration(keyId, newType, wirePath));
+                enqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
+                enqueue.accept(Frame.value(keyId, newType, value));
+            }
+            return false;  // no resync needed — sent incrementally
         }
 
         if (existing.type() != newType) {
@@ -88,8 +95,14 @@ public class TopicPayload {
         Entry existing = entries.get(key);
 
         if (existing == null) {
-            entries.put(key, new Entry(allocateKeyId.getAsInt(), newType, value));
-            if (onResync != null) onResync.run();
+            int keyId = allocateKeyId.getAsInt();
+            entries.put(key, new Entry(keyId, newType, value));
+            if (enqueue != null) {
+                String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
+                enqueue.accept(Frame.keyRegistration(keyId, newType, wirePath));
+                enqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
+                enqueue.accept(Frame.value(keyId, newType, value));
+            }
             return;
         }
 

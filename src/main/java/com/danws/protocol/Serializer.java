@@ -21,7 +21,7 @@ public final class Serializer {
             case INT64 -> ByteBuffer.allocate(8).putLong(((Number) value).longValue()).array();
             case FLOAT32 -> ByteBuffer.allocate(4).putFloat(((Number) value).floatValue()).array();
             case FLOAT64 -> ByteBuffer.allocate(8).putDouble(((Number) value).doubleValue()).array();
-            case STRING -> ((String) value).getBytes(StandardCharsets.UTF_8);
+            case STRING -> (value instanceof String s ? s : value.toString()).getBytes(StandardCharsets.UTF_8);
             case BINARY -> (byte[]) value;
             case TIMESTAMP -> {
                 long ms;
