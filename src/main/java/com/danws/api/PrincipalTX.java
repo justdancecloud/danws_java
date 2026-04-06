@@ -90,6 +90,8 @@ public class PrincipalTX {
             return;
         }
 
+        if (Objects.equals(store.get(existing.keyId()), value)) return;
+
         store.put(existing.keyId(), value);
         if (onValueSet != null) {
             onValueSet.accept(Frame.value(existing.keyId(), existing.type(), value));

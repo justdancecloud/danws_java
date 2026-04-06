@@ -122,6 +122,8 @@ public class DanWebSocketSession {
             return;
         }
 
+        if (Objects.equals(sessionStore.get(existing.keyId()), value)) return;
+
         sessionStore.put(existing.keyId(), value);
         if (sessionEnqueue != null) {
             sessionEnqueue.accept(Frame.value(existing.keyId(), existing.type(), value));
