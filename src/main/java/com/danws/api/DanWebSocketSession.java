@@ -28,9 +28,10 @@ public class DanWebSocketSession {
     private boolean serverSyncSent;
     private boolean clientReadyReceived;
 
-    // Session-level flat TX store (backward compat, keyId starts at 50001)
-    private final KeyRegistry sessionRegistry = new KeyRegistry(50001);
+    // Session-level flat TX store (backward compat)
+    private final KeyRegistry sessionRegistry = new KeyRegistry();
     private final Map<Integer, Object> sessionStore = new ConcurrentHashMap<>();
+    private int nextKeyId = 1; // global keyId counter — shared by flat session keys and all topic payloads
     private Consumer<Frame> sessionEnqueue;
     private boolean sessionBound;
 
@@ -77,7 +78,8 @@ public class DanWebSocketSession {
         KeyRegistry.KeyEntry existing = sessionRegistry.getByPath(key);
 
         if (existing == null) {
-            int keyId = sessionRegistry.registerNew(key, newType);
+            int keyId = nextKeyId++;
+            sessionRegistry.registerOne(keyId, key, newType);
             sessionStore.put(keyId, value);
             triggerSessionResync();
             return;
@@ -85,7 +87,8 @@ public class DanWebSocketSession {
 
         if (existing.type() != newType) {
             sessionRegistry.remove(key);
-            int keyId = sessionRegistry.registerNew(key, newType);
+            int keyId = nextKeyId++;
+            sessionRegistry.registerOne(keyId, key, newType);
             sessionStore.remove(existing.keyId());
             sessionStore.put(keyId, value);
             triggerSessionResync();
@@ -232,7 +235,7 @@ public class DanWebSocketSession {
 
     TopicHandle createTopicHandle(String name, Map<String, Object> params, int wireIndex) {
         if (wireIndex >= topicIndex) topicIndex = wireIndex + 1;
-        TopicPayload payload = new TopicPayload(wireIndex);
+        TopicPayload payload = new TopicPayload(wireIndex, () -> nextKeyId++);
         if (sessionEnqueue != null) {
             payload.bind(sessionEnqueue, this::triggerSessionResync);
         }

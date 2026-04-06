@@ -4,20 +4,21 @@ import com.danws.protocol.*;
 
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 
 public class TopicPayload {
 
     private record Entry(int keyId, DataType type, Object value) {}
 
     private final Map<String, Entry> entries = new LinkedHashMap<>();
-    private int nextKeyId;
     private final int index;
+    private final IntSupplier allocateKeyId;
     private Consumer<Frame> enqueue;
     private Runnable onResync;
 
-    public TopicPayload(int index) {
+    public TopicPayload(int index, IntSupplier allocateKeyId) {
         this.index = index;
-        this.nextKeyId = index * 10000 + 1;
+        this.allocateKeyId = allocateKeyId;
     }
 
     void bind(Consumer<Frame> enqueue, Runnable onResync) {
@@ -33,7 +34,7 @@ public class TopicPayload {
         Entry existing = entries.get(key);
 
         if (existing == null) {
-            entries.put(key, new Entry(nextKeyId++, newType, value));
+            entries.put(key, new Entry(allocateKeyId.getAsInt(), newType, value));
             if (onResync != null) onResync.run();
             return;
         }

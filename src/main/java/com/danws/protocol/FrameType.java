@@ -17,7 +17,7 @@ public enum FrameType {
     IDENTIFY(0x0D),
     AUTH(0x0E),
     AUTH_OK(0x0F),
-    AUTH_FAIL(0x10);
+    AUTH_FAIL(0x11);
 
     private final int code;
 

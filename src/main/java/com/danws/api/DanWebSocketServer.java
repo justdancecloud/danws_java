@@ -175,6 +175,7 @@ public class DanWebSocketServer {
             i.session.disposeAllTopicHandles();
             i.session.handleDisconnect();
             if (i.ttlFuture != null) i.ttlFuture.cancel(false);
+            if (i.ws != null && i.ws.isOpen()) { try { i.ws.close(1001, "Server shutting down"); } catch (Exception ignored) {} }
         }
         sessions.clear();
         tmpSessions.clear();
