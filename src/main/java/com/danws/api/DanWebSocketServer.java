@@ -247,7 +247,7 @@ public class DanWebSocketServer {
                 InternalSession internal = getInternal(clientUuid);
                 if (internal != null) {
                     internal.heartbeat.received();
-                    sendBytes(ctx.channel(), Codec.encodeHeartbeat());
+                    // No echo — server sends its own heartbeat on a timer via HeartbeatManager
                 }
             });
 

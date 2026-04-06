@@ -265,7 +265,7 @@ public class DanWebSocketClient {
             }
             case SERVER_SYNC -> {
                 if (state == State.IDENTIFYING) state = State.SYNCHRONIZING;
-                sendFrame(Frame.signal(FrameType.CLIENT_READY));
+                if (state != State.READY) sendFrame(Frame.signal(FrameType.CLIENT_READY));
                 if (registry.size() == 0) {
                     state = State.READY;
                     onReady.forEach(Runnable::run);

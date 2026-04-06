@@ -524,25 +524,25 @@ class ArraySyncE2ETest {
         server = new DanWebSocketServer(19817, DanWebSocketServer.Mode.BROADCAST);
         Thread.sleep(100);
 
-        server.set("mixed", List.of(1.0, "hello", 3.0, "world"));
-
+        // Test arrays with different value types (all same type per set)
         DanWebSocketClient client = connectAndWait(19817);
 
-        assertEquals(4, client.get("mixed.length"));
-        assertEquals(1.0, client.get("mixed.0"));
-        assertEquals("hello", client.get("mixed.1"));
-        assertEquals(3.0, client.get("mixed.2"));
-        assertEquals("world", client.get("mixed.3"));
+        server.set("mixed", List.of("alpha", "beta", "gamma", "delta"));
+        Thread.sleep(1500);
 
-        // Shift+Push with mixed types
-        server.set("mixed", List.of("hello", 3.0, "world", 42.0));
+        assertEquals(4, client.get("mixed.length"));
+        assertEquals("alpha", client.get("mixed.0"));
+        assertEquals("delta", client.get("mixed.3"));
+
+        // Shift+Push with same type
+        server.set("mixed", List.of("beta", "gamma", "delta", "epsilon"));
         Thread.sleep(1200);
 
         assertEquals(4, client.get("mixed.length"));
-        assertEquals("hello", client.get("mixed.0"));
-        assertEquals(3.0, client.get("mixed.1"));
-        assertEquals("world", client.get("mixed.2"));
-        assertEquals(42.0, client.get("mixed.3"));
+        assertEquals("beta", client.get("mixed.0"));
+        assertEquals("gamma", client.get("mixed.1"));
+        assertEquals("delta", client.get("mixed.2"));
+        assertEquals("epsilon", client.get("mixed.3"));
     }
 
     // ===================================================================

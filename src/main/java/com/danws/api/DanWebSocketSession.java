@@ -359,6 +359,7 @@ public class DanWebSocketSession {
     void handleFrame(Frame frame) {
         switch (frame.frameType()) {
             case CLIENT_READY -> {
+                if (state == State.READY) return; // already synced — ignore
                 clientReadyReceived = true;
                 if (txValueFrameProvider != null && enqueueFrame != null) {
                     txValueFrameProvider.get().forEach(enqueueFrame);
