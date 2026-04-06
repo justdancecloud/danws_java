@@ -14,7 +14,11 @@ public class PrincipalTX {
     private final Map<Integer, Object> store = new ConcurrentHashMap<>();
     private Consumer<Frame> onValueSet;
     private Runnable onKeysChanged;
+    private TriConsumer<Frame, Frame, Frame> onIncrementalKey;
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
+
+    @FunctionalInterface
+    interface TriConsumer<A, B, C> { void accept(A a, B b, C c); }
 
     public PrincipalTX(String name) {
         this.name = name;
@@ -24,6 +28,7 @@ public class PrincipalTX {
 
     void setOnValue(Consumer<Frame> fn) { this.onValueSet = fn; }
     void setOnResync(Runnable fn) { this.onKeysChanged = fn; }
+    void setOnIncremental(TriConsumer<Frame, Frame, Frame> fn) { this.onIncrementalKey = fn; }
 
     public void set(String key, Object value) {
         if (Flatten.shouldFlatten(value)) {
@@ -63,7 +68,15 @@ public class PrincipalTX {
         if (existing == null) {
             int keyId = registry.registerNew(key, newType);
             store.put(keyId, value);
-            triggerResync();
+            if (onIncrementalKey != null) {
+                onIncrementalKey.accept(
+                    Frame.keyRegistration(keyId, newType, key),
+                    Frame.signal(FrameType.SERVER_SYNC),
+                    Frame.value(keyId, newType, value)
+                );
+            } else {
+                triggerResync();
+            }
             return;
         }
 
@@ -123,9 +136,8 @@ public class PrincipalTX {
         for (KeyEntry entry : registry.entries()) {
             frames.add(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
         }
-        if (!frames.isEmpty()) {
-            frames.add(Frame.signal(FrameType.SERVER_SYNC));
-        }
+        // Always include ServerSync so client transitions from synchronizing to ready
+        frames.add(Frame.signal(FrameType.SERVER_SYNC));
         return frames;
     }
 

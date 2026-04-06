@@ -210,6 +210,16 @@ public class DanWebSocketServer {
                 }
             }
         });
+        ptx.setOnIncremental((keyFrame, syncFrame, valueFrame) -> {
+            for (InternalSession i : sessions.values()) {
+                if (matchesPrincipal(i, ptx.name()) && i.session.state() == DanWebSocketSession.State.READY
+                        && i.ws != null && i.ws.isOpen()) {
+                    sendFrame(i, keyFrame);
+                    sendFrame(i, syncFrame);
+                    sendFrame(i, valueFrame);
+                }
+            }
+        });
         ptx.setOnResync(() -> {
             for (InternalSession i : sessions.values()) {
                 if (matchesPrincipal(i, ptx.name()) && i.session.connected() && i.ws != null && i.ws.isOpen()) {

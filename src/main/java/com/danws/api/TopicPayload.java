@@ -32,13 +32,17 @@ public class TopicPayload {
             Map<String, Object> flattened = Flatten.flatten(key, value);
             Set<String> newKeys = flattened.keySet();
             Set<String> oldKeys = flattenedKeys.get(key);
+            boolean deleted = false;
             if (oldKeys != null) {
                 for (String oldPath : oldKeys) {
-                    if (!newKeys.contains(oldPath)) entries.remove(oldPath);
+                    if (!newKeys.contains(oldPath)) {
+                        entries.remove(oldPath);
+                        deleted = true;
+                    }
                 }
             }
             flattenedKeys.put(key, new HashSet<>(newKeys));
-            boolean needsResync = false;
+            boolean needsResync = deleted;
             for (var entry : flattened.entrySet()) {
                 if (setLeafInternal(entry.getKey(), entry.getValue())) needsResync = true;
             }
