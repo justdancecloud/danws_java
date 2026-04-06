@@ -94,7 +94,7 @@ public class StreamParser {
         byte[] rawPayload = Arrays.copyOfRange(body, 4, body.length);
 
         Object payload;
-        if (frameType == FrameType.SERVER_KEY_REGISTRATION) {
+        if (frameType == FrameType.SERVER_KEY_REGISTRATION || frameType == FrameType.CLIENT_KEY_REGISTRATION) {
             payload = Serializer.deserialize(DataType.STRING, rawPayload);
         } else if (isSignalFrame(frameType)) {
             payload = null;
@@ -107,7 +107,9 @@ public class StreamParser {
 
     private boolean isSignalFrame(FrameType ft) {
         return ft == FrameType.SERVER_SYNC || ft == FrameType.CLIENT_READY
+                || ft == FrameType.CLIENT_SYNC || ft == FrameType.SERVER_READY
                 || ft == FrameType.SERVER_RESET || ft == FrameType.CLIENT_RESYNC_REQ
+                || ft == FrameType.CLIENT_RESET || ft == FrameType.SERVER_RESYNC_REQ
                 || ft == FrameType.AUTH_OK;
     }
 

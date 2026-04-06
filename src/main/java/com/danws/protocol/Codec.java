@@ -13,7 +13,7 @@ public final class Codec {
 
     public static byte[] encode(Frame frame) {
         byte[] rawPayload;
-        if (frame.frameType() == FrameType.SERVER_KEY_REGISTRATION) {
+        if (isKeyRegistrationFrame(frame.frameType())) {
             rawPayload = Serializer.serialize(DataType.STRING, frame.payload());
         } else if (isSignalFrame(frame.frameType())) {
             rawPayload = new byte[0];
@@ -21,7 +21,6 @@ public final class Codec {
             rawPayload = Serializer.serialize(frame.dataType(), frame.payload());
         }
 
-        // Build raw body: [FrameType:1] [KeyID:2] [DataType:1] [Payload:N]
         byte[] rawBody = new byte[4 + rawPayload.length];
         rawBody[0] = (byte) frame.frameType().code();
         rawBody[1] = (byte) ((frame.keyId() >> 8) & 0xFF);
@@ -29,10 +28,8 @@ public final class Codec {
         rawBody[3] = (byte) frame.dataType().code();
         System.arraycopy(rawPayload, 0, rawBody, 4, rawPayload.length);
 
-        // DLE-escape entire body
         byte[] escapedBody = DLE.encode(rawBody);
 
-        // Wrap: DLE STX [body] DLE ETX
         byte[] result = new byte[2 + escapedBody.length + 2];
         result[0] = DLE_BYTE;
         result[1] = STX;
@@ -62,8 +59,7 @@ public final class Codec {
 
         while (i < bytes.length) {
             if (i + 1 >= bytes.length || bytes[i] != DLE_BYTE || bytes[i + 1] != STX) {
-                throw new DanWSException("FRAME_PARSE_ERROR",
-                        "Expected DLE STX at offset " + i);
+                throw new DanWSException("FRAME_PARSE_ERROR", "Expected DLE STX at offset " + i);
             }
             i += 2;
 
@@ -75,38 +71,24 @@ public final class Codec {
                     if (i + 1 >= bytes.length) {
                         throw new DanWSException("FRAME_PARSE_ERROR", "Unexpected end after DLE");
                     }
-                    if (bytes[i + 1] == ETX) {
-                        bodyEnd = i;
-                        i += 2;
-                        break;
-                    } else if (bytes[i + 1] == DLE_BYTE) {
-                        i += 2;
-                    } else {
-                        throw new DanWSException("INVALID_DLE_SEQUENCE",
-                                "Invalid DLE sequence: 0x10 0x" + String.format("%02x", bytes[i + 1]));
-                    }
-                } else {
-                    i++;
-                }
+                    if (bytes[i + 1] == ETX) { bodyEnd = i; i += 2; break; }
+                    else if (bytes[i + 1] == DLE_BYTE) { i += 2; }
+                    else { throw new DanWSException("INVALID_DLE_SEQUENCE", "Invalid DLE sequence"); }
+                } else { i++; }
             }
 
-            if (bodyEnd == -1) {
-                throw new DanWSException("FRAME_PARSE_ERROR", "Missing DLE ETX");
-            }
+            if (bodyEnd == -1) throw new DanWSException("FRAME_PARSE_ERROR", "Missing DLE ETX");
 
             byte[] body = DLE.decode(Arrays.copyOfRange(bytes, bodyStart, bodyEnd));
-            if (body.length < 4) {
-                throw new DanWSException("FRAME_PARSE_ERROR", "Frame body too short: " + body.length);
-            }
+            if (body.length < 4) throw new DanWSException("FRAME_PARSE_ERROR", "Frame body too short: " + body.length);
 
             FrameType frameType = FrameType.fromCode(body[0] & 0xFF);
             int keyId = ((body[1] & 0xFF) << 8) | (body[2] & 0xFF);
             DataType dataType = DataType.fromCode(body[3] & 0xFF);
-
             byte[] rawPayload = Arrays.copyOfRange(body, 4, body.length);
 
             Object payload;
-            if (frameType == FrameType.SERVER_KEY_REGISTRATION) {
+            if (isKeyRegistrationFrame(frameType)) {
                 payload = Serializer.deserialize(DataType.STRING, rawPayload);
             } else if (isSignalFrame(frameType)) {
                 payload = null;
@@ -120,11 +102,19 @@ public final class Codec {
         return frames;
     }
 
+    private static boolean isKeyRegistrationFrame(FrameType ft) {
+        return ft == FrameType.SERVER_KEY_REGISTRATION || ft == FrameType.CLIENT_KEY_REGISTRATION;
+    }
+
     private static boolean isSignalFrame(FrameType ft) {
         return ft == FrameType.SERVER_SYNC
                 || ft == FrameType.CLIENT_READY
+                || ft == FrameType.CLIENT_SYNC
+                || ft == FrameType.SERVER_READY
                 || ft == FrameType.SERVER_RESET
                 || ft == FrameType.CLIENT_RESYNC_REQ
+                || ft == FrameType.CLIENT_RESET
+                || ft == FrameType.SERVER_RESYNC_REQ
                 || ft == FrameType.AUTH_OK;
     }
 }

@@ -1,6 +1,7 @@
 package com.danws.api;
 
 import com.danws.protocol.*;
+import com.danws.state.KeyRegistry;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
@@ -11,12 +12,16 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class DanWebSocketServer {
 
-    public enum Mode { BROADCAST, INDIVIDUAL }
+    public enum Mode { BROADCAST, PRINCIPAL, INDIVIDUAL, SESSION_TOPIC, SESSION_PRINCIPAL_TOPIC }
 
     private static final String BROADCAST_PRINCIPAL = "__broadcast__";
+    private static final Pattern TOPIC_NAME_PATTERN = Pattern.compile("^topic\\.(\\d+)\\.name$");
+    private static final Pattern TOPIC_PARAM_PATTERN = Pattern.compile("^topic\\.(\\d+)\\.param\\.(.+)$");
 
     private final Mode mode;
     private final WebSocketServer wss;
@@ -27,16 +32,18 @@ public class DanWebSocketServer {
     private final Map<String, PrincipalTX> principals = new ConcurrentHashMap<>();
     private final Map<String, InternalSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, InternalSession> tmpSessions = new ConcurrentHashMap<>();
+    private final Map<WebSocket, String> wsToUuid = new ConcurrentHashMap<>();
 
     private final List<Consumer<DanWebSocketSession>> onConnection = new ArrayList<>();
     private final List<BiConsumer<String, String>> onAuthorize = new ArrayList<>();
     private final List<Consumer<DanWebSocketSession>> onSessionExpired = new ArrayList<>();
-
-    // WebSocket → clientUuid mapping
-    private final Map<WebSocket, String> wsToUuid = new ConcurrentHashMap<>();
+    private final List<BiConsumer<DanWebSocketSession, TopicInfo>> onTopicSubscribe = new ArrayList<>();
+    private final List<BiConsumer<DanWebSocketSession, String>> onTopicUnsubscribe = new ArrayList<>();
+    private final List<BiConsumer<DanWebSocketSession, TopicInfo>> onTopicParamsChange = new ArrayList<>();
 
     public DanWebSocketServer(int port, String path, Mode mode, long ttlMs) {
-        this.mode = mode;
+        // INDIVIDUAL is alias for PRINCIPAL
+        this.mode = (mode == Mode.INDIVIDUAL) ? Mode.PRINCIPAL : mode;
         this.ttl = ttlMs;
 
         wss = new WebSocketServer(new InetSocketAddress(port)) {
@@ -61,20 +68,24 @@ public class DanWebSocketServer {
     }
 
     public DanWebSocketServer(int port) {
-        this(port, "/", Mode.INDIVIDUAL, 600_000);
+        this(port, "/", Mode.PRINCIPAL, 600_000);
     }
 
     public Mode mode() { return mode; }
 
-    
+    private boolean isTopicMode() {
+        return mode == Mode.SESSION_TOPIC || mode == Mode.SESSION_PRINCIPAL_TOPIC;
+    }
+
+    // ---- Broadcast mode API ----
 
     public void set(String key, Object value) {
-        assertBroadcast("set");
+        assertMode(Mode.BROADCAST, "set");
         getPrincipal(BROADCAST_PRINCIPAL).set(key, value);
     }
 
     public Object get(String key) {
-        assertBroadcast("get");
+        assertMode(Mode.BROADCAST, "get");
         return getPrincipal(BROADCAST_PRINCIPAL).get(key);
     }
 
@@ -84,32 +95,28 @@ public class DanWebSocketServer {
     }
 
     public void clear(String key) {
-        assertBroadcast("clear");
+        assertMode(Mode.BROADCAST, "clear");
         getPrincipal(BROADCAST_PRINCIPAL).clear(key);
     }
 
     public void clear() {
-        assertBroadcast("clear");
+        assertMode(Mode.BROADCAST, "clear");
         getPrincipal(BROADCAST_PRINCIPAL).clear();
     }
 
-    
+    // ---- Principal mode API ----
 
     public PrincipalTX principal(String name) {
-        assertIndividual("principal");
+        if (mode != Mode.PRINCIPAL && mode != Mode.SESSION_PRINCIPAL_TOPIC) {
+            throw new DanWSException("INVALID_MODE", "server.principal() is only available in PRINCIPAL/SESSION_PRINCIPAL_TOPIC mode.");
+        }
         return getPrincipal(name);
     }
 
-    
+    // ---- Common API ----
 
-    public void enableAuthorization(boolean enabled) {
-        this.authEnabled = enabled;
-    }
-
-    public void enableAuthorization(boolean enabled, long timeoutMs) {
-        this.authEnabled = enabled;
-        this.authTimeout = timeoutMs;
-    }
+    public void enableAuthorization(boolean enabled) { this.authEnabled = enabled; }
+    public void enableAuthorization(boolean enabled, long timeoutMs) { this.authEnabled = enabled; this.authTimeout = timeoutMs; }
 
     public void authorize(String clientUuid, String token, String principal) {
         InternalSession internal = tmpSessions.remove(clientUuid);
@@ -124,15 +131,12 @@ public class DanWebSocketServer {
     public void reject(String clientUuid, String reason) {
         InternalSession internal = tmpSessions.remove(clientUuid);
         if (internal == null) return;
-
         sendFrame(internal, new Frame(FrameType.AUTH_FAIL, 0, DataType.STRING, reason != null ? reason : "Rejected"));
         if (internal.ws != null) {
             try { Thread.sleep(50); } catch (InterruptedException ignored) {}
             internal.ws.close();
         }
     }
-
-    
 
     public DanWebSocketSession getSession(String uuid) {
         InternalSession i = sessions.get(uuid);
@@ -162,18 +166,21 @@ public class DanWebSocketServer {
         try { wss.stop(500); } catch (InterruptedException ignored) {}
     }
 
-    
+    // ---- Event registration ----
 
     public void onConnection(Consumer<DanWebSocketSession> cb) { onConnection.add(cb); }
     public void onAuthorize(BiConsumer<String, String> cb) { onAuthorize.add(cb); }
     public void onSessionExpired(Consumer<DanWebSocketSession> cb) { onSessionExpired.add(cb); }
+    public void onTopicSubscribe(BiConsumer<DanWebSocketSession, TopicInfo> cb) { onTopicSubscribe.add(cb); }
+    public void onTopicUnsubscribe(BiConsumer<DanWebSocketSession, String> cb) { onTopicUnsubscribe.add(cb); }
+    public void onTopicParamsChange(BiConsumer<DanWebSocketSession, TopicInfo> cb) { onTopicParamsChange.add(cb); }
 
-    
+    // ---- Internal ----
 
     private PrincipalTX getPrincipal(String name) {
         return principals.computeIfAbsent(name, n -> {
             PrincipalTX ptx = new PrincipalTX(n);
-            bindPrincipalTX(ptx);
+            if (!isTopicMode()) bindPrincipalTX(ptx);
             return ptx;
         });
     }
@@ -187,7 +194,6 @@ public class DanWebSocketServer {
                 }
             }
         });
-
         ptx.setOnResync(() -> {
             for (InternalSession i : sessions.values()) {
                 if (matchesPrincipal(i, ptx.name()) && i.session.connected() && i.ws != null && i.ws.isOpen()) {
@@ -216,49 +222,12 @@ public class DanWebSocketServer {
             String uuid = wsToUuid.get(conn);
 
             if (uuid == null) {
-                // First frame must be IDENTIFY
                 if (frame.frameType() != FrameType.IDENTIFY) { conn.close(); return; }
                 if (!(frame.payload() instanceof byte[] payload) || payload.length != 16) { conn.close(); return; }
 
                 uuid = bytesToUuid(payload);
                 wsToUuid.put(conn, uuid);
-
-                // Reconnect check
-                InternalSession existing = sessions.get(uuid);
-                if (existing != null) {
-                    if (existing.ws != null && existing.ws.isOpen()) existing.ws.close();
-                    if (existing.ttlFuture != null) { existing.ttlFuture.cancel(false); existing.ttlFuture = null; }
-                    existing.ws = conn;
-                    existing.session.handleReconnect();
-                }
-
-                if (existing != null && !authEnabled) {
-                    String p = existing.session.principal() != null ? existing.session.principal()
-                            : (mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : "default");
-                    existing.session.authorize(p);
-                    activateSession(existing, p);
-                    return;
-                }
-
-                if (existing != null && authEnabled) {
-                    tmpSessions.put(uuid, existing);
-                    sessions.remove(uuid);
-                    return;
-                }
-
-                // New session
-                DanWebSocketSession session = new DanWebSocketSession(uuid);
-                InternalSession internal = new InternalSession(session, conn);
-                session.setEnqueue(f -> sendFrame(internal, f));
-
-                if (authEnabled) {
-                    tmpSessions.put(uuid, internal);
-                } else {
-                    String defaultPrincipal = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : "default";
-                    session.authorize(defaultPrincipal);
-                    sessions.put(uuid, internal);
-                    activateSession(internal, defaultPrincipal);
-                }
+                handleIdentified(conn, uuid);
                 return;
             }
 
@@ -272,6 +241,19 @@ public class DanWebSocketServer {
                 return;
             }
 
+            // Client topic frames (topic modes)
+            if (isTopicMode()) {
+                InternalSession internal = sessions.get(uuid);
+                if (internal != null) {
+                    FrameType ft = frame.frameType();
+                    if (ft == FrameType.CLIENT_RESET || ft == FrameType.CLIENT_KEY_REGISTRATION
+                            || ft == FrameType.CLIENT_VALUE || ft == FrameType.CLIENT_SYNC) {
+                        handleClientTopicFrame(internal, frame);
+                        return;
+                    }
+                }
+            }
+
             // Route to session
             InternalSession internal = sessions.get(uuid);
             if (internal != null) internal.session.handleFrame(frame);
@@ -281,13 +263,142 @@ public class DanWebSocketServer {
         parser.feed(bytes);
     }
 
-    private void activateSession(InternalSession internal, String principal) {
-        String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : principal;
-        PrincipalTX ptx = getPrincipal(effective);
+    private void handleIdentified(WebSocket conn, String uuid) {
+        InternalSession existing = sessions.get(uuid);
+        if (existing != null) {
+            if (existing.ws != null && existing.ws.isOpen()) existing.ws.close();
+            if (existing.ttlFuture != null) { existing.ttlFuture.cancel(false); existing.ttlFuture = null; }
+            existing.ws = conn;
+            existing.session.handleReconnect();
 
-        internal.session.setTxProviders(ptx::buildKeyFrames, ptx::buildValueFrames);
-        for (var cb : onConnection) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
-        internal.session.startSync();
+            if (authEnabled) {
+                tmpSessions.put(uuid, existing);
+                sessions.remove(uuid);
+            } else {
+                String p = existing.session.principal() != null ? existing.session.principal()
+                        : (mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : "default");
+                existing.session.authorize(p);
+                activateSession(existing, p);
+            }
+            return;
+        }
+
+        DanWebSocketSession session = new DanWebSocketSession(uuid);
+        InternalSession internal = new InternalSession(session, conn);
+        session.setEnqueue(f -> sendFrame(internal, f));
+
+        if (authEnabled) {
+            tmpSessions.put(uuid, internal);
+        } else {
+            String defaultPrincipal = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : "default";
+            session.authorize(defaultPrincipal);
+            sessions.put(uuid, internal);
+            activateSession(internal, defaultPrincipal);
+        }
+    }
+
+    private void activateSession(InternalSession internal, String principal) {
+        if (isTopicMode()) {
+            internal.session.bindSessionTX(f -> sendFrame(internal, f));
+            for (var cb : onConnection) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
+            // Send empty ServerSync so client transitions to ready
+            sendFrame(internal, Frame.signal(FrameType.SERVER_SYNC));
+        } else {
+            String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : principal;
+            PrincipalTX ptx = getPrincipal(effective);
+            internal.session.setTxProviders(ptx::buildKeyFrames, ptx::buildValueFrames);
+            for (var cb : onConnection) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
+            internal.session.startSync();
+        }
+    }
+
+    // ---- Client topic frame handling ----
+
+    private void handleClientTopicFrame(InternalSession internal, Frame frame) {
+        switch (frame.frameType()) {
+            case CLIENT_RESET -> {
+                if (internal.clientRegistry != null) internal.clientRegistry.clear();
+                else internal.clientRegistry = new KeyRegistry();
+                if (internal.clientValues != null) internal.clientValues.clear();
+                else internal.clientValues = new HashMap<>();
+            }
+            case CLIENT_KEY_REGISTRATION -> {
+                if (internal.clientRegistry == null) internal.clientRegistry = new KeyRegistry();
+                internal.clientRegistry.registerOne(frame.keyId(), (String) frame.payload(), frame.dataType());
+            }
+            case CLIENT_VALUE -> {
+                if (internal.clientValues == null) internal.clientValues = new HashMap<>();
+                internal.clientValues.put(frame.keyId(), frame.payload());
+            }
+            case CLIENT_SYNC -> processTopicSync(internal);
+            default -> {}
+        }
+    }
+
+    private void processTopicSync(InternalSession internal) {
+        DanWebSocketSession session = internal.session;
+
+        Map<String, Map<String, Object>> newTopics = new LinkedHashMap<>();
+
+        if (internal.clientRegistry != null && internal.clientValues != null) {
+            Map<String, String> indexToName = new HashMap<>();
+
+            for (String path : internal.clientRegistry.paths()) {
+                Matcher m = TOPIC_NAME_PATTERN.matcher(path);
+                if (m.matches()) {
+                    KeyRegistry.KeyEntry entry = internal.clientRegistry.getByPath(path);
+                    if (entry != null) {
+                        String topicName = (String) internal.clientValues.get(entry.keyId());
+                        if (topicName != null) {
+                            indexToName.put(m.group(1), topicName);
+                            newTopics.putIfAbsent(topicName, new HashMap<>());
+                        }
+                    }
+                }
+            }
+
+            for (String path : internal.clientRegistry.paths()) {
+                Matcher m = TOPIC_PARAM_PATTERN.matcher(path);
+                if (m.matches()) {
+                    String topicName = indexToName.get(m.group(1));
+                    if (topicName != null) {
+                        KeyRegistry.KeyEntry entry = internal.clientRegistry.getByPath(path);
+                        if (entry != null) {
+                            Object value = internal.clientValues.get(entry.keyId());
+                            if (value != null) newTopics.get(topicName).put(m.group(2), value);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Diff: unsubscribed
+        Set<String> oldTopics = new HashSet<>(session.topics());
+        for (String oldName : oldTopics) {
+            if (!newTopics.containsKey(oldName)) {
+                session.removeTopic(oldName);
+                for (var cb : onTopicUnsubscribe) { try { cb.accept(session, oldName); } catch (Exception ignored) {} }
+            }
+        }
+
+        // Diff: new / changed
+        for (var entry : newTopics.entrySet()) {
+            String name = entry.getKey();
+            Map<String, Object> params = entry.getValue();
+            TopicInfo existing = session.topic(name);
+
+            if (existing == null) {
+                session.addTopic(name, params);
+                TopicInfo info = new TopicInfo(name, params);
+                for (var cb : onTopicSubscribe) { try { cb.accept(session, info); } catch (Exception ignored) {} }
+            } else {
+                if (!existing.params().equals(params)) {
+                    session.updateTopicParams(name, params);
+                    TopicInfo info = new TopicInfo(name, params);
+                    for (var cb : onTopicParamsChange) { try { cb.accept(session, info); } catch (Exception ignored) {} }
+                }
+            }
+        }
     }
 
     private void handleSessionDisconnect(String uuid) {
@@ -310,14 +421,9 @@ public class DanWebSocketServer {
         }
     }
 
-    private void assertBroadcast(String method) {
-        if (mode != Mode.BROADCAST)
-            throw new DanWSException("INVALID_MODE", "server." + method + "() is only available in broadcast mode");
-    }
-
-    private void assertIndividual(String method) {
-        if (mode != Mode.INDIVIDUAL)
-            throw new DanWSException("INVALID_MODE", "server." + method + "() is only available in individual mode");
+    private void assertMode(Mode expected, String method) {
+        if (mode != expected)
+            throw new DanWSException("INVALID_MODE", "server." + method + "() is only available in " + expected + " mode.");
     }
 
     private static final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -338,6 +444,8 @@ public class DanWebSocketServer {
         DanWebSocketSession session;
         WebSocket ws;
         ScheduledFuture<?> ttlFuture;
+        KeyRegistry clientRegistry;
+        Map<Integer, Object> clientValues;
 
         InternalSession(DanWebSocketSession session, WebSocket ws) {
             this.session = session;

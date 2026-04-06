@@ -34,7 +34,7 @@ You just `set(key, value)` on the server. All connected clients receive it insta
 
 ```groovy
 dependencies {
-    implementation 'io.github.justdancecloud:dan-websocket:0.1.0'
+    implementation 'io.github.justdancecloud:dan-websocket:0.2.0'
 }
 ```
 
@@ -44,7 +44,7 @@ dependencies {
 <dependency>
     <groupId>io.github.justdancecloud</groupId>
     <artifactId>dan-websocket</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
 </dependency>
 ```
 
@@ -52,11 +52,20 @@ Requires **Java 17+**.
 
 ---
 
+## 4 Modes
+
+| Mode | Auth | Data Scope | Topics | Use Case |
+|------|------|-----------|--------|----------|
+| `BROADCAST` | No | Shared (all clients) | No | Dashboards, live feeds |
+| `PRINCIPAL` | Yes | Per-principal (shared across devices) | No | Games, per-user data |
+| `SESSION_TOPIC` | No | Per-session | Yes | Public charts, anonymous boards |
+| `SESSION_PRINCIPAL_TOPIC` | Yes | Per-session + principal identity | Yes | Authenticated boards, personalized charts |
+
+---
+
 ## Quick Start
 
 ### 1. Broadcast Mode — all clients get the same data
-
-Perfect for dashboards, live feeds, status pages.
 
 **Server:**
 
@@ -66,18 +75,10 @@ import static com.danws.api.DanWebSocketServer.Mode;
 
 var server = new DanWebSocketServer(8080, Mode.BROADCAST);
 
-// Just set values. Types are auto-detected. No schema needed.
 server.set("sensor.temp", 23.5);          // Double → Float64
 server.set("sensor.status", "online");    // String → String
 server.set("sensor.active", true);        // Boolean → Bool
 server.set("sensor.updated", new Date()); // Date → Timestamp
-
-// Update a value — all connected clients get it within 100ms
-new Timer().scheduleAtFixedRate(new TimerTask() {
-    public void run() {
-        server.set("sensor.temp", 20 + Math.random() * 10);
-    }
-}, 0, 1000);
 
 // Read back, list, delete
 server.get("sensor.temp");     // 23.5
@@ -93,13 +94,11 @@ import com.danws.api.DanWebSocketClient;
 
 var client = new DanWebSocketClient("ws://localhost:8080");
 
-// Fires once initial sync is complete
 client.onReady(() -> {
     System.out.println("Temperature: " + client.get("sensor.temp"));
     System.out.println("All keys: " + client.keys());
 });
 
-// Fires on every value update (including initial sync)
 client.onReceive((key, value) -> {
     System.out.println(key + " = " + value);
 });
@@ -107,34 +106,52 @@ client.onReceive((key, value) -> {
 client.connect();
 ```
 
-### 2. Individual Mode — per-user data via principals
-
-Perfect for games, user dashboards, personalized data.
-
-A **principal** = one authenticated user. All their sessions (PC, mobile, other tabs) share the same state automatically.
+### 2. Principal Mode — per-user data via principals
 
 **Server:**
 
 ```java
-var server = new DanWebSocketServer(8080, Mode.INDIVIDUAL);
+var server = new DanWebSocketServer(8080, Mode.PRINCIPAL);
 
-// Enable authentication
 server.enableAuthorization(true);
 server.onAuthorize((uuid, token) -> {
     String user = verifyJWT(token);
-    server.authorize(uuid, token, user);  // 3rd arg = principal name
+    server.authorize(uuid, token, user);
 });
 
-// Set data per principal — no schema, just set
 server.principal("alice").set("score", 100.0);
 server.principal("alice").set("name", "Alice");
 
 server.principal("bob").set("score", 50.0);
-server.principal("bob").set("name", "Bob");
 
 // Alice opens on PC and mobile → both sessions see score=100
-// Update alice → all her sessions get it instantly
 server.principal("alice").set("score", 200.0);
+```
+
+### 3. Session Topic Mode — per-session data driven by client topics
+
+**Server:**
+
+```java
+var server = new DanWebSocketServer(8080, Mode.SESSION_TOPIC);
+
+server.onTopicSubscribe((session, topic) -> {
+    // topic.name() = "board.posts"
+    // topic.params() = { page=1.0, size=20.0 }
+    var data = db.getPosts(topic.params());
+    session.set("posts", data.items());       // push to THIS session only
+    session.set("totalCount", data.total());
+});
+
+server.onTopicParamsChange((session, topic) -> {
+    var data = db.getPosts(topic.params());
+    session.set("posts", data.items());
+});
+
+server.onTopicUnsubscribe((session, topicName) -> {
+    session.clearKey("posts");
+    session.clearKey("totalCount");
+});
 ```
 
 **Client:**
@@ -142,49 +159,40 @@ server.principal("alice").set("score", 200.0);
 ```java
 var client = new DanWebSocketClient("ws://localhost:8080");
 
-client.onConnect(() -> client.authorize(myJWTToken));
-
 client.onReady(() -> {
-    System.out.println("My score: " + client.get("score"));  // 100.0
-    System.out.println("My name: " + client.get("name"));    // "Alice"
+    client.subscribe("board.posts", Map.of("page", 1.0, "size", 20.0));
+    client.subscribe("chart.sales", Map.of("range", "7d"));
 });
 
 client.onReceive((key, value) -> {
-    if ("score".equals(key)) updateScoreUI(value);
+    if ("posts".equals(key)) renderTable(value);
 });
+
+// Change page
+client.setParams("board.posts", Map.of("page", 2.0, "size", 20.0));
+
+// Unsubscribe
+client.unsubscribe("chart.sales");
 
 client.connect();
 ```
 
----
+### 4. Session Principal Topic Mode — topics with authentication
 
-## Architecture
+```java
+var server = new DanWebSocketServer(8080, Mode.SESSION_PRINCIPAL_TOPIC);
 
-```
-┌─────────────────────────────────────────────────────┐
-│                     SERVER                          │
-│                                                     │
-│  Broadcast Mode:                                    │
-│    server.set("temp", 23.5) ──▶ All clients         │
-│                                                     │
-│  Individual Mode:                                   │
-│    Principal "alice" ─── Shared State (1 copy)      │
-│      ├── Session (PC)     ── same data              │
-│      ├── Session (mobile) ── same data              │
-│      └── Session (tablet) ── same data              │
-│                                                     │
-│    Principal "bob" ─── Shared State (1 copy)        │
-│      └── Session (laptop) ── own data               │
-└──────────────────────┬──────────────────────────────┘
-                       │ Binary WebSocket (DanProtocol v3.0)
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│                     CLIENT                          │
-│                                                     │
-│  client.get("temp")  → 23.5                         │
-│  client.onReceive((key, val) -> ...)                │
-│  client.keys()       → ["temp", "status", ...]      │
-└─────────────────────────────────────────────────────┘
+server.enableAuthorization(true);
+server.onAuthorize((uuid, token) -> {
+    String user = verifyJWT(token);
+    server.authorize(uuid, token, user);
+});
+
+server.onTopicSubscribe((session, topic) -> {
+    // session.principal() = "alice"
+    var data = db.getUserPosts(session.principal(), topic.params());
+    session.set("posts", data.items());
+});
 ```
 
 ---
@@ -192,10 +200,6 @@ client.connect();
 ## API Reference
 
 ### Server — Broadcast Mode
-
-```java
-var server = new DanWebSocketServer(port, Mode.BROADCAST);
-```
 
 | Method | Description |
 |--------|-------------|
@@ -205,11 +209,7 @@ var server = new DanWebSocketServer(port, Mode.BROADCAST);
 | `server.clear(key)` | Remove one key |
 | `server.clear()` | Remove all keys |
 
-### Server — Individual Mode
-
-```java
-var server = new DanWebSocketServer(port, Mode.INDIVIDUAL);
-```
+### Server — Principal Mode
 
 | Method | Description |
 |--------|-------------|
@@ -219,25 +219,28 @@ var server = new DanWebSocketServer(port, Mode.INDIVIDUAL);
 | `server.principal(name).clear(key)` | Remove one key |
 | `server.principal(name).clear()` | Remove all keys |
 
-### Server — Auth & Sessions
+### Server — Topic Modes
+
+| Event | Callback Type |
+|-------|---------------|
+| `server.onTopicSubscribe(cb)` | `BiConsumer<DanWebSocketSession, TopicInfo>` |
+| `server.onTopicUnsubscribe(cb)` | `BiConsumer<DanWebSocketSession, String>` |
+| `server.onTopicParamsChange(cb)` | `BiConsumer<DanWebSocketSession, TopicInfo>` |
+
+**Session (in topic modes):**
 
 | Method | Description |
 |--------|-------------|
-| `server.enableAuthorization(enabled)` | Enable token auth |
-| `server.authorize(uuid, token, principal)` | Accept, bind to principal |
-| `server.reject(uuid, reason)` | Reject |
-| `server.onConnection(cb)` | New session: `Consumer<Session>` |
-| `server.onAuthorize(cb)` | Auth received: `BiConsumer<uuid, token>` |
-| `server.getSession(uuid)` | Get session by ID |
-| `server.getSessionsByPrincipal(name)` | All sessions for principal |
-| `server.isConnected(uuid)` | Connection status |
-| `server.close()` | Shutdown |
+| `session.set(key, value)` | Push data to this session only |
+| `session.get(key)` | Read current value |
+| `session.keys()` | List keys |
+| `session.clearKey(key)` | Remove one key |
+| `session.clearKey()` | Remove all keys |
+| `session.topics()` | List subscribed topic names |
+| `session.topic(name)` | Get `TopicInfo`: `name()`, `params()` |
+| `session.principal()` | Principal name (SESSION_PRINCIPAL_TOPIC only) |
 
 ### Client
-
-```java
-var client = new DanWebSocketClient(url);
-```
 
 | Method | Description |
 |--------|-------------|
@@ -248,6 +251,16 @@ var client = new DanWebSocketClient(url);
 | `client.keys()` | All received key paths |
 | `client.id()` | This client's UUIDv7 |
 | `client.state()` | Connection state enum |
+
+**Topic methods:**
+
+| Method | Description |
+|--------|-------------|
+| `client.subscribe(name, params)` | Subscribe with params |
+| `client.subscribe(name)` | Subscribe without params |
+| `client.unsubscribe(name)` | Unsubscribe |
+| `client.setParams(name, params)` | Update params |
+| `client.topics()` | List subscribed topics |
 
 | Event | Callback Type |
 |-------|--------------|

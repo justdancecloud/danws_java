@@ -26,6 +26,9 @@ public class DanWebSocketClient {
     private final KeyRegistry registry = new KeyRegistry();
     private final Map<Integer, Object> store = new ConcurrentHashMap<>();
 
+    // Topic state
+    private final Map<String, Map<String, Object>> subscriptions = new LinkedHashMap<>();
+
     private final List<Runnable> onConnect = new ArrayList<>();
     private final List<Runnable> onDisconnect = new ArrayList<>();
     private final List<Runnable> onReady = new ArrayList<>();
@@ -78,7 +81,32 @@ public class DanWebSocketClient {
         state = State.AUTHORIZING;
     }
 
-    
+    // ---- Topic API ----
+
+    public void subscribe(String topicName, Map<String, Object> params) {
+        subscriptions.put(topicName, params != null ? params : Map.of());
+        sendTopicSync();
+    }
+
+    public void subscribe(String topicName) {
+        subscribe(topicName, Map.of());
+    }
+
+    public void unsubscribe(String topicName) {
+        if (subscriptions.remove(topicName) != null) sendTopicSync();
+    }
+
+    public void setParams(String topicName, Map<String, Object> params) {
+        if (!subscriptions.containsKey(topicName)) return;
+        subscriptions.put(topicName, params);
+        sendTopicSync();
+    }
+
+    public List<String> topics() {
+        return new ArrayList<>(subscriptions.keySet());
+    }
+
+    // ---- Event registration ----
 
     public void onConnect(Runnable cb) { onConnect.add(cb); }
     public void onDisconnect(Runnable cb) { onDisconnect.add(cb); }
@@ -88,7 +116,7 @@ public class DanWebSocketClient {
     public void onReconnectFailed(Runnable cb) { onReconnectFailed.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
 
-    
+    // ---- Internals ----
 
     private void handleOpen() {
         state = State.IDENTIFYING;
@@ -130,17 +158,22 @@ public class DanWebSocketClient {
             }
             case SERVER_KEY_REGISTRATION -> {
                 if (state == State.IDENTIFYING) state = State.SYNCHRONIZING;
-                String keyPath = (String) frame.payload();
-                registry.registerOne(frame.keyId(), keyPath, frame.dataType());
+                registry.registerOne(frame.keyId(), (String) frame.payload(), frame.dataType());
             }
             case SERVER_SYNC -> {
                 if (state == State.IDENTIFYING) state = State.SYNCHRONIZING;
                 sendFrame(Frame.signal(FrameType.CLIENT_READY));
+
+                // No keys registered → go ready immediately
+                if (registry.size() == 0) {
+                    state = State.READY;
+                    onReady.forEach(Runnable::run);
+                    if (!subscriptions.isEmpty()) sendTopicSync();
+                }
             }
             case SERVER_VALUE -> {
                 if (!registry.hasKeyId(frame.keyId())) {
-                    onError.forEach(cb -> cb.accept(new DanWSException("UNKNOWN_KEY_ID",
-                            "Unknown key ID: " + frame.keyId())));
+                    onError.forEach(cb -> cb.accept(new DanWSException("UNKNOWN_KEY_ID", "Unknown key ID: " + frame.keyId())));
                     sendFrame(Frame.signal(FrameType.CLIENT_RESYNC_REQ));
                     return;
                 }
@@ -152,8 +185,10 @@ public class DanWebSocketClient {
                 if (state == State.SYNCHRONIZING) {
                     state = State.READY;
                     onReady.forEach(Runnable::run);
+                    if (!subscriptions.isEmpty()) sendTopicSync();
                 }
             }
+            case SERVER_READY -> { /* Server acknowledged topic sync */ }
             case SERVER_RESET -> {
                 registry.clear();
                 store.clear();
@@ -167,6 +202,45 @@ public class DanWebSocketClient {
         }
     }
 
+    private void sendTopicSync() {
+        if (ws == null || !ws.isOpen()) return;
+
+        // Build flat key-value entries
+        List<String> paths = new ArrayList<>();
+        List<Object> values = new ArrayList<>();
+        List<DataType> types = new ArrayList<>();
+
+        int idx = 0;
+        for (var entry : subscriptions.entrySet()) {
+            paths.add("topic." + idx + ".name");
+            values.add(entry.getKey());
+            types.add(DataType.STRING);
+
+            for (var param : entry.getValue().entrySet()) {
+                paths.add("topic." + idx + ".param." + param.getKey());
+                values.add(param.getValue());
+                types.add(DataType.detect(param.getValue()));
+            }
+            idx++;
+        }
+
+        // ClientReset
+        sendFrame(Frame.signal(FrameType.CLIENT_RESET));
+
+        // ClientKeyRegistration
+        for (int i = 0; i < paths.size(); i++) {
+            sendFrame(new Frame(FrameType.CLIENT_KEY_REGISTRATION, i + 1, types.get(i), paths.get(i)));
+        }
+
+        // ClientValue (BEFORE sync!)
+        for (int i = 0; i < values.size(); i++) {
+            sendFrame(new Frame(FrameType.CLIENT_VALUE, i + 1, types.get(i), values.get(i)));
+        }
+
+        // ClientSync
+        sendFrame(Frame.signal(FrameType.CLIENT_SYNC));
+    }
+
     private void sendFrame(Frame frame) {
         if (ws != null && ws.isOpen()) {
             ws.send(ByteBuffer.wrap(Codec.encode(frame)));
@@ -176,14 +250,7 @@ public class DanWebSocketClient {
     private static String generateUUIDv7() {
         long now = System.currentTimeMillis();
         byte[] bytes = new byte[16];
-        bytes[0] = (byte) (now >> 40);
-        bytes[1] = (byte) (now >> 32);
-        bytes[2] = (byte) (now >> 24);
-        bytes[3] = (byte) (now >> 16);
-        bytes[4] = (byte) (now >> 8);
-        bytes[5] = (byte) now;
         new Random().nextBytes(bytes);
-        // Fix timestamp bytes
         bytes[0] = (byte) (now >> 40); bytes[1] = (byte) (now >> 32);
         bytes[2] = (byte) (now >> 24); bytes[3] = (byte) (now >> 16);
         bytes[4] = (byte) (now >> 8); bytes[5] = (byte) now;
@@ -200,9 +267,7 @@ public class DanWebSocketClient {
     private static byte[] uuidToBytes(String uuid) {
         String hex = uuid.replace("-", "");
         byte[] bytes = new byte[16];
-        for (int i = 0; i < 16; i++) {
-            bytes[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-        }
+        for (int i = 0; i < 16; i++) bytes[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
         return bytes;
     }
 }
