@@ -66,7 +66,7 @@ public class DanWebSocketServer {
 
     public Mode mode() { return mode; }
 
-    // ──── Broadcast API ────
+    
 
     public void set(String key, Object value) {
         assertBroadcast("set");
@@ -93,14 +93,14 @@ public class DanWebSocketServer {
         getPrincipal(BROADCAST_PRINCIPAL).clear();
     }
 
-    // ──── Individual API ────
+    
 
     public PrincipalTX principal(String name) {
         assertIndividual("principal");
         return getPrincipal(name);
     }
 
-    // ──── Auth ────
+    
 
     public void enableAuthorization(boolean enabled) {
         this.authEnabled = enabled;
@@ -132,7 +132,7 @@ public class DanWebSocketServer {
         }
     }
 
-    // ──── Session queries ────
+    
 
     public DanWebSocketSession getSession(String uuid) {
         InternalSession i = sessions.get(uuid);
@@ -162,13 +162,13 @@ public class DanWebSocketServer {
         try { wss.stop(500); } catch (InterruptedException ignored) {}
     }
 
-    // ──── Events ────
+    
 
     public void onConnection(Consumer<DanWebSocketSession> cb) { onConnection.add(cb); }
     public void onAuthorize(BiConsumer<String, String> cb) { onAuthorize.add(cb); }
     public void onSessionExpired(Consumer<DanWebSocketSession> cb) { onSessionExpired.add(cb); }
 
-    // ──── Internal ────
+    
 
     private PrincipalTX getPrincipal(String name) {
         return principals.computeIfAbsent(name, n -> {

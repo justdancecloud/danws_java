@@ -78,7 +78,7 @@ public class DanWebSocketClient {
         state = State.AUTHORIZING;
     }
 
-    // ──── Events ────
+    
 
     public void onConnect(Runnable cb) { onConnect.add(cb); }
     public void onDisconnect(Runnable cb) { onDisconnect.add(cb); }
@@ -88,7 +88,7 @@ public class DanWebSocketClient {
     public void onReconnectFailed(Runnable cb) { onReconnectFailed.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
 
-    // ──── Internal ────
+    
 
     private void handleOpen() {
         state = State.IDENTIFYING;

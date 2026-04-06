@@ -52,7 +52,7 @@ public class DanWebSocketSession {
         state = State.DISCONNECTED;
     }
 
-    // ──── Internal ────
+    
 
     void setEnqueue(Consumer<Frame> fn) { this.enqueueFrame = fn; }
 
