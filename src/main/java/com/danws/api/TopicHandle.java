@@ -1,30 +1,29 @@
 package com.danws.api;
 
+import io.netty.channel.EventLoop;
+import io.netty.util.concurrent.ScheduledFuture;
+
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.TimeUnit;
 
 public class TopicHandle {
-
-    private static final ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(2, r -> {
-        Thread t = new Thread(r, "danws-topic-task");
-        t.setDaemon(true);
-        return t;
-    });
 
     private final String name;
     private Map<String, Object> params;
     private final TopicPayload payload;
     private final DanWebSocketSession session;
+    private final EventLoop eventLoop;
 
     private TopicCallback callback;
     private ScheduledFuture<?> timerFuture;
     private long delayMs;
 
-    public TopicHandle(String name, Map<String, Object> params, TopicPayload payload, DanWebSocketSession session) {
+    public TopicHandle(String name, Map<String, Object> params, TopicPayload payload, DanWebSocketSession session, EventLoop eventLoop) {
         this.name = name;
         this.params = params;
         this.payload = payload;
         this.session = session;
+        this.eventLoop = eventLoop;
     }
 
     public String name() { return name; }
@@ -39,11 +38,13 @@ public class TopicHandle {
     public void setDelayedTask(long ms) {
         clearDelayedTask();
         this.delayMs = ms;
-        timerFuture = SCHEDULER.scheduleAtFixedRate(() -> {
-            if (callback != null) {
-                try { callback.accept(EventType.DELAYED_TASK, TopicHandle.this, session); } catch (Exception ignored) {}
-            }
-        }, ms, ms, TimeUnit.MILLISECONDS);
+        if (eventLoop != null) {
+            timerFuture = eventLoop.scheduleAtFixedRate(() -> {
+                if (callback != null) {
+                    try { callback.accept(EventType.DELAYED_TASK, TopicHandle.this, session); } catch (Exception ignored) {}
+                }
+            }, ms, ms, TimeUnit.MILLISECONDS);
+        }
     }
 
     public void clearDelayedTask() {

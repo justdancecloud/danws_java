@@ -3,6 +3,8 @@ package com.danws.api;
 import com.danws.protocol.*;
 import com.danws.state.KeyRegistry;
 
+import io.netty.channel.EventLoop;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -40,6 +42,7 @@ public class DanWebSocketSession {
     private final Map<String, TopicHandle> topicHandles = new LinkedHashMap<>();
     private int topicIndex = 0;
     private final Map<String, TopicInfo> topics = new LinkedHashMap<>();
+    private EventLoop eventLoop;
 
     public DanWebSocketSession(String clientUuid) {
         this.id = clientUuid;
@@ -177,6 +180,10 @@ public class DanWebSocketSession {
         this.sessionBound = true;
     }
 
+    void setEventLoop(EventLoop eventLoop) {
+        this.eventLoop = eventLoop;
+    }
+
     void authorize(String principal) {
         this.principal = principal;
         this.authorized = true;
@@ -263,7 +270,7 @@ public class DanWebSocketSession {
         if (sessionEnqueue != null) {
             payload.bind(sessionEnqueue, this::triggerSessionResync);
         }
-        TopicHandle handle = new TopicHandle(name, params, payload, this);
+        TopicHandle handle = new TopicHandle(name, params, payload, this, eventLoop);
         topicHandles.put(name, handle);
         topics.put(name, new TopicInfo(name, params));
         return handle;

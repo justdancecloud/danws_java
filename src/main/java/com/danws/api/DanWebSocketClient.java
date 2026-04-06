@@ -28,11 +28,32 @@ public class DanWebSocketClient {
 
     private static final Pattern TOPIC_WIRE_PATTERN = Pattern.compile("^t\\.(\\d+)\\.(.+)$");
 
+    // Shared EventLoopGroup for all clients — avoids 1 thread per client
+    private static volatile EventLoopGroup SHARED_GROUP;
+
+    private static EventLoopGroup getSharedGroup() {
+        if (SHARED_GROUP == null) {
+            synchronized (DanWebSocketClient.class) {
+                if (SHARED_GROUP == null) {
+                    SHARED_GROUP = new NioEventLoopGroup(
+                        Math.max(4, Runtime.getRuntime().availableProcessors()),
+                        r -> { Thread t = new Thread(r, "danws-client"); t.setDaemon(true); return t; }
+                    );
+                }
+            }
+        }
+        return SHARED_GROUP;
+    }
+
+    /** Override the shared EventLoopGroup (e.g. for stress tests needing more threads). */
+    public static void setSharedGroup(EventLoopGroup group) {
+        SHARED_GROUP = group;
+    }
+
     private final String id;
     private final URI uri;
     private State state = State.DISCONNECTED;
     private Channel channel;
-    private EventLoopGroup group;
     private boolean intentionalDisconnect;
 
     private final KeyRegistry registry = new KeyRegistry();
@@ -79,7 +100,6 @@ public class DanWebSocketClient {
         intentionalDisconnect = false;
         state = State.CONNECTING;
 
-        group = new NioEventLoopGroup(1);
         String scheme = uri.getScheme();
         int port = uri.getPort();
         if (port == -1) port = "wss".equals(scheme) ? 443 : 80;
@@ -90,7 +110,7 @@ public class DanWebSocketClient {
 
         int finalPort = port;
         Bootstrap b = new Bootstrap();
-        b.group(group)
+        b.group(getSharedGroup())
          .channel(NioSocketChannel.class)
          .option(ChannelOption.TCP_NODELAY, true)
          .handler(new ChannelInitializer<SocketChannel>() {
@@ -343,7 +363,6 @@ public class DanWebSocketClient {
 
     private void cleanup() {
         if (channel != null) { try { channel.close(); } catch (Exception ignored) {} channel = null; }
-        if (group != null) { group.shutdownGracefully(0, 100, java.util.concurrent.TimeUnit.MILLISECONDS); group = null; }
     }
 
     private static String generateUUIDv7() {

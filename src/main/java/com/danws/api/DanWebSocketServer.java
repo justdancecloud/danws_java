@@ -354,6 +354,15 @@ public class DanWebSocketServer {
             if (existing.ttlFuture != null) { existing.ttlFuture.cancel(false); existing.ttlFuture = null; }
             existing.ch = ch;
             existing.session.handleReconnect();
+            existing.session.setEventLoop(ch.eventLoop());
+            // Recreate BulkQueue and HeartbeatManager on new EventLoop
+            existing.bulkQueue.dispose();
+            existing.bulkQueue = new BulkQueue(ch.eventLoop());
+            existing.session.setEnqueue(f -> existing.bulkQueue.enqueue(f));
+            existing.heartbeat.stop();
+            existing.heartbeat = new HeartbeatManager(ch.eventLoop());
+            existing.heartbeat.onSend(data -> sendBytes(ch, data));
+            existing.heartbeat.onTimeout(() -> handleSessionDisconnect(uuid));
             existing.heartbeat.start();
             existing.bulkQueue.onFlush(data -> sendBytes(ch, data));
 
@@ -370,8 +379,9 @@ public class DanWebSocketServer {
         }
 
         DanWebSocketSession session = new DanWebSocketSession(uuid);
-        BulkQueue bulkQueue = new BulkQueue();
-        HeartbeatManager heartbeat = new HeartbeatManager();
+        session.setEventLoop(ch.eventLoop());
+        BulkQueue bulkQueue = new BulkQueue(ch.eventLoop());
+        HeartbeatManager heartbeat = new HeartbeatManager(ch.eventLoop());
 
         InternalSession internal = new InternalSession(session, ch, bulkQueue, heartbeat);
 
@@ -513,7 +523,7 @@ public class DanWebSocketServer {
         internal.bulkQueue.clear();
         internal.ch = null;
 
-        internal.ttlFuture = ttlScheduler.schedule(() -> {
+        internal.ttlFuture = workerGroup.next().schedule(() -> {
             sessions.remove(uuid);
             for (var cb : onSessionExpired) { try { cb.accept(internal.session); } catch (Exception ignored) {} }
         }, ttl, TimeUnit.MILLISECONDS);
@@ -530,11 +540,6 @@ public class DanWebSocketServer {
             throw new DanWSException("INVALID_MODE", "server." + method + "() is only available in " + expected + " mode.");
     }
 
-    private static final ScheduledExecutorService ttlScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "danws-ttl");
-        t.setDaemon(true);
-        return t;
-    });
 
     private static String bytesToUuid(byte[] bytes) {
         StringBuilder hex = new StringBuilder();

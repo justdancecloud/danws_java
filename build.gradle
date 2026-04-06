@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'io.github.justdancecloud'
-version = '0.5.2'
+version = '1.0.0'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -27,6 +27,12 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    jvmArgs '-Xmx4g', '-Xms2g'
+    exclude '**/StressTest.class', '**/TenKTest.class'
+    def tmpDir = System.getProperty('java.io.tmpdir') + '/danws-test-' + System.currentTimeMillis()
+    reports.junitXml.outputLocation = file(tmpDir + '/xml')
+    reports.html.outputLocation = file(tmpDir + '/html')
+    binaryResultsDirectory = file(tmpDir + '/binary')
 }
 
 tasks.withType(JavaCompile) {
@@ -76,6 +82,14 @@ publishing {
         maven {
             name = 'local'
             url = layout.buildDirectory.dir('repo')
+        }
+        maven {
+            name = 'central'
+            url = 'https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/'
+            credentials {
+                username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME') ?: ''
+                password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD') ?: ''
+            }
         }
     }
 }
