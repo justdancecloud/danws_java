@@ -72,7 +72,7 @@ client.onUpdate(() -> System.out.println(client.get("price.btc"))); // 67000
 client.connect();
 ```
 
-Server puts an object in. Client reads it out. Between the two — binary serialization, field-level dedup, batch flush — all automatic, zero config.
+Only changed fields are binary-encoded and sent — up to **99% less traffic** than re-sending full JSON. Drop in the library, cut your network costs.
 
 ---
 
