@@ -375,15 +375,19 @@ server.set("logs", logs);
 // The auto-flatten dedup handles it: only logs.{N} and logs.length are new
 ```
 
-### Frame Count Comparison
+### Frame Count Comparison (Verified by automated tests)
 
 | Scenario | Array Size | Before v2.0 | After v2.0 | Reduction |
 |----------|-----------|-------------|------------|-----------|
-| Shift+push (sliding window) | 100 | 101 frames | 2 frames | **98%** |
-| Shift+push (sliding window) | 1000 | 1001 frames | 2 frames | **99.8%** |
-| Prepend 5 elements | 100 | 106 frames | 7 frames | **93%** |
-| Append 1 element | 100 | 2 frames | 2 frames | Same |
-| Random update | 100 | 1 frame | 1 frame | Same |
+| Shift+push (sliding window) | 100 | ~100 frames | **2 frames** | **98%** |
+| Shift by 10 + push 10 | 100 | ~100 frames | **10 frames** | **90%** |
+| Prepend (right shift) | 50 | ~50 frames | **3 frames** | **94%** |
+| Append 1 element | 10 | 2 frames | **2 frames** | Same (already optimal) |
+| Pop (shrink from end) | 10→7 | full resync | **1 frame** | **99%+** |
+| Unchanged (same data) | 100 | ~100 frames | **0 frames** | **100%** |
+| 10× repeated shift+push | 50 | ~500 total | **20 total** (2 each) | **96%** |
+
+> These numbers are from actual E2E tests: server sets the array, client counts `onReceive` callbacks. See `FrameCountTest.java` for the full benchmark.
 
 ### ArraySync -- Ring Buffer API for Explicit Control
 
