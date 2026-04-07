@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.6 (2026-04-07)
+- README: detailed mode documentation with complete server + client examples for all 4 modes
+- README: auth flow, topic lifecycle, multi-device sync, params change explained
+- README: version references updated to v2.1.5, protocol v3.3
+
 ## 2.1.5 (2026-04-07)
 - Add: `maxMessageSize` (default 1MB) — limits incoming WebSocket frame size via Netty maxFrameSize
 - Add: `maxValueSize` (default 64KB) — throws VALUE_TOO_LARGE if serialized value exceeds limit

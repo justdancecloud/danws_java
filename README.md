@@ -5,7 +5,7 @@
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.justdancecloud/dan-websocket)](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket)
 [![npm](https://img.shields.io/npm/v/dan-websocket)](https://www.npmjs.com/package/dan-websocket)
 
-Java implementation of [DanProtocol v3.2](./dan-protocol-3.0.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
+Java implementation of [DanProtocol v3.3](./dan-protocol-3.0.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
 
 ---
 
@@ -43,7 +43,7 @@ The library handles:
 
 ```groovy
 dependencies {
-    implementation 'io.github.justdancecloud:dan-websocket:2.1.3'
+    implementation 'io.github.justdancecloud:dan-websocket:2.1.5'
 }
 ```
 
@@ -53,7 +53,7 @@ dependencies {
 <dependency>
     <groupId>io.github.justdancecloud</groupId>
     <artifactId>dan-websocket</artifactId>
-    <version>2.1.3</version>
+    <version>2.1.5</version>
 </dependency>
 ```
 
@@ -102,20 +102,22 @@ This is the core idea: **objects in, objects out, binary in between**. Only chan
 
 ---
 
-## 4 Modes
+## Modes
 
-| Mode | Auth | Data Scope | Topics | Use Case |
-|------|------|-----------|--------|----------|
-| `BROADCAST` | No | Shared (all clients) | No | Dashboards, live feeds, sensor walls |
-| `PRINCIPAL` | Yes | Per-principal (shared across devices) | No | Games, per-user data, multi-device sync |
-| `SESSION_TOPIC` | No | Per-session + topic scoped | Yes | Public charts, anonymous boards, live data feeds |
-| `SESSION_PRINCIPAL_TOPIC` | Yes | Per-session + topic scoped + auth | Yes | Authenticated dashboards, personalized charts |
+| Mode | Auth | Data scope | Use case |
+|------|:---:|-----------|----------|
+| `BROADCAST` | No | All clients see the same state | Dashboards, tickers, live feeds |
+| `PRINCIPAL` | Yes | Per-user state, shared across all user's devices | Games, portfolios, user profiles |
+| `SESSION_TOPIC` | No | Each client subscribes to topics, gets its own data per topic | Public charts, anonymous boards |
+| `SESSION_PRINCIPAL_TOPIC` | Yes | Topics + user identity (session knows who you are) | Authenticated dashboards, personalized feeds |
 
 ---
 
-## Quick Start
+### 1. Broadcast
 
-### 1. Broadcast Mode -- all clients get the same data
+The simplest mode. The server holds one global state. Every connected client gets the same data. No auth required.
+
+**When to use:** Live dashboards, crypto tickers, server monitoring -- anything where all users see the same thing.
 
 **Server:**
 
@@ -125,16 +127,23 @@ import static com.danws.api.DanWebSocketServer.Mode;
 
 var server = new DanWebSocketServer(8080, Mode.BROADCAST);
 
-server.set("sensor.temp", 23.5);          // Double -> Float64
-server.set("sensor.status", "online");    // String -> String
-server.set("sensor.active", true);        // Boolean -> Bool
-server.set("sensor.updated", new Date()); // Date -> Timestamp
+// Set any object -- it auto-flattens to binary leaf keys
+server.set("market", Map.of(
+    "btc", Map.of("price", 67000.0, "volume", 1200.0),
+    "eth", Map.of("price", 3200.0, "volume", 800.0)
+));
 
-// Read back, list, delete
-server.get("sensor.temp");     // 23.5
-server.keys();                 // ["sensor.temp", "sensor.status", ...]
-server.clear("sensor.active"); // remove one key
-server.clear();                // remove all keys
+// Update periodically -- only changed fields go over the wire
+var timer = new Timer();
+timer.scheduleAtFixedRate(new TimerTask() {
+    public void run() {
+        server.set("market", Map.of(
+            "btc", Map.of("price", 67000 + Math.random() * 100, "volume", 1200.0),
+            "eth", Map.of("price", 3200 + Math.random() * 10, "volume", 800.0)
+        ));
+        // If only btc.price changed → 1 frame (8 bytes). eth stays the same → 0 bytes.
+    }
+}, 0, 1000);
 ```
 
 **Client:**
@@ -144,43 +153,79 @@ import com.danws.api.DanWebSocketClient;
 
 var client = new DanWebSocketClient("ws://localhost:8080");
 
-client.onReady(() -> {
-    System.out.println("Temperature: " + client.get("sensor.temp"));
-    System.out.println("All keys: " + client.keys());
-});
-
-client.onReceive((key, value) -> {
-    System.out.println(key + " = " + value);  // fires per-frame (fine-grained)
-});
-
-// onUpdate fires once per server flush batch (~100ms) — ideal for UI rendering
+// onUpdate fires once per server flush batch (~100ms), not per field.
+// Safe for rendering -- no render storms.
 client.onUpdate(() -> {
-    System.out.println("Batch sync complete — safe to render");
+    System.out.println("BTC: " + client.get("market.btc.price"));
+    System.out.println("ETH volume: " + client.get("market.eth.volume"));
+});
+
+// You can also listen per-field:
+client.onReceive((key, value) -> {
+    // key = "market.btc.price", value = 67042.3
+    // Called for every individual field change
 });
 
 client.connect();
 ```
 
-### 2. Principal Mode -- per-user data via principals
+**What's on the wire:**
+1. First connect → server sends key registrations + all current values (full sync)
+2. After that → only changed leaf fields as binary frames
+3. Client disconnects and reconnects → full sync again (automatic)
+
+---
+
+### 2. Principal
+
+Per-user state. Each user is identified by a "principal" name (e.g., username). If one user has multiple devices (PC + mobile), all devices share the same state and stay in sync automatically.
+
+**When to use:** Online games (per-player state), user dashboards, portfolio trackers -- anything where each user has their own data.
+
+**Auth flow:**
+1. Client connects → server fires `onAuthorize` with the client's UUID and token
+2. Your code validates the token (JWT, session lookup, etc.)
+3. You call `server.authorize(uuid, token, principalName)` to bind the client to a principal
+4. All clients with the same principal share the same state
 
 **Server:**
 
 ```java
 var server = new DanWebSocketServer(8080, Mode.PRINCIPAL);
 
+// Step 1: Enable auth -- clients must send a token before receiving data
 server.enableAuthorization(true);
+
+// Step 2: Handle auth -- validate token, then authorize or reject
 server.onAuthorize((uuid, token) -> {
-    String user = verifyJWT(token);
-    server.authorize(uuid, token, user);
+    try {
+        String username = verifyJWT(token);           // your auth logic
+        server.authorize(uuid, token, username);      // bind to principal "alice"
+    } catch (Exception e) {
+        server.reject(uuid, "Invalid token");         // close connection
+    }
 });
 
-server.principal("alice").set("score", 100.0);
-server.principal("alice").set("name", "Alice");
+// Step 3: Set data per principal -- all of alice's devices get this
+server.principal("alice").set("profile", Map.of(
+    "name", "Alice",
+    "score", 100,
+    "inventory", List.of("sword", "shield", "potion")
+));
 
-server.principal("bob").set("score", 50.0);
+// Later: alice scores a point
+server.principal("alice").set("profile", Map.of(
+    "name", "Alice",
+    "score", 101,  // only this 8-byte Float64 goes to alice's PC + mobile
+    "inventory", List.of("sword", "shield", "potion")  // unchanged → not sent
+));
 
-// Alice opens on PC and mobile -> both sessions see score=100
-server.principal("alice").set("score", 200.0);
+// Each principal is independent -- bob's data is separate
+server.principal("bob").set("profile", Map.of(
+    "name", "Bob",
+    "score", 50,
+    "inventory", List.of("axe")
+));
 ```
 
 **Client:**
@@ -188,47 +233,109 @@ server.principal("alice").set("score", 200.0);
 ```java
 var client = new DanWebSocketClient("ws://localhost:8080");
 
-client.onConnect(() -> client.authorize("alice-jwt-token"));
-
-client.onReady(() -> {
-    System.out.println("Score: " + client.get("score"));
+// After connecting, send auth token
+client.onConnect(() -> {
+    client.authorize("eyJhbGciOiJIUzI1NiJ9...");  // your JWT or session token
 });
 
-client.onReceive((key, value) -> {
-    System.out.println(key + " = " + value);
+// onReady fires after auth succeeds + initial data sync completes
+client.onReady(() -> {
+    System.out.println("Authenticated and synced!");
+    System.out.println("Score: " + client.get("profile.score"));
+});
+
+// Receive state updates -- you only see YOUR principal's data
+client.onUpdate(() -> {
+    System.out.println("Score: " + client.get("profile.score"));
+    System.out.println("Name: " + client.get("profile.name"));
+});
+
+client.onError(err -> {
+    if ("AUTH_REJECTED".equals(err.code())) {
+        System.out.println("Login failed: " + err.getMessage());
+    }
 });
 
 client.connect();
 ```
 
-### 3. Session Topic Mode -- per-session scoped data with topics
+**Multi-device sync:** If Alice opens the app on her phone while already connected on PC, both devices see the same data. When the server updates Alice's principal, both devices get the update instantly.
+
+---
+
+### 3. Session Topic
+
+Topic-based subscriptions without auth. Each client subscribes to "topics" with optional parameters, and the server provides data per-topic per-session. Different clients can subscribe to different topics or the same topic with different params.
+
+**When to use:** Public data feeds where each client picks what to watch -- stock charts (different symbols), paginated boards, real-time search results.
+
+**Topic lifecycle:**
+1. Client calls `client.subscribe("topic.name", params)`
+2. Server's `topic().onSubscribe` fires → you register a callback
+3. Callback runs immediately (`SUBSCRIBE`) and on every `setDelayedTask` tick (`DELAYED_TASK`)
+4. Client calls `client.setParams(...)` → callback re-fires with `CHANGED_PARAMS`
+5. Client calls `client.unsubscribe(...)` → server's `topic().onUnsubscribe` fires, timers stop
 
 **Server:**
 
 ```java
+import com.danws.api.*;
+
 var server = new DanWebSocketServer(8080, Mode.SESSION_TOPIC);
 
 server.topic().onSubscribe((session, topic) -> {
-    if ("board.posts".equals(topic.name())) {
+
+    // Each topic.name gets its own handler
+    if ("stock.chart".equals(topic.name())) {
         topic.setCallback((event, t, s) -> {
-            var data = db.getPosts(t.params());
-            t.payload().set("items", data.items());
-            t.payload().set("totalCount", data.total());
+            // event tells you WHY this callback fired:
+            //   SUBSCRIBE       → client just subscribed (first call)
+            //   CHANGED_PARAMS  → client changed params (e.g., different symbol)
+            //   DELAYED_TASK    → timer tick (periodic refresh)
+
+            if (event == EventType.CHANGED_PARAMS) {
+                t.payload().clear();  // params changed → clear old data
+            }
+
+            // t.params() contains the client's subscription parameters
+            String symbol = (String) t.params().get("symbol");    // "AAPL"
+
+            List<Map<String, Object>> candles = fetchCandles(symbol);
+            t.payload().set("candles", candles);  // array → auto-flattened, shift-detected
+            t.payload().set("meta", Map.of(
+                "symbol", symbol,
+                "lastUpdate", new Date(),
+                "count", candles.size()
+            ));
         });
+
+        // Re-run the callback every 5 seconds (polling)
+        topic.setDelayedTask(5000);
     }
 
-    if ("chart.cpu".equals(topic.name())) {
+    if ("board.posts".equals(topic.name())) {
         topic.setCallback((event, t, s) -> {
-            var stats = getCpuStats();
-            t.payload().set("value", stats.usage());
-            t.payload().set("timestamp", new Date());
+            if (event == EventType.CHANGED_PARAMS) t.payload().clear();
+
+            int page = ((Number) t.params().getOrDefault("page", 1)).intValue();
+            int size = ((Number) t.params().getOrDefault("size", 20)).intValue();
+            var data = db.getPosts(page, size);
+
+            t.payload().set("result", Map.of(
+                "items", data.items(),         // array of maps → each field auto-flattened
+                "totalCount", data.total(),
+                "page", page
+            ));
         });
-        topic.setDelayedTask(1000); // poll every 1s
+
+        topic.setDelayedTask(3000);  // refresh every 3s
     }
 });
 
+// Optional: clean up when client unsubscribes
 server.topic().onUnsubscribe((session, topic) -> {
-    System.out.println("Unsubscribed: " + topic.name());
+    System.out.println(session.id() + " unsubscribed from " + topic.name());
+    // Timers are automatically stopped -- no manual cleanup needed
 });
 ```
 
@@ -238,55 +345,103 @@ server.topic().onUnsubscribe((session, topic) -> {
 var client = new DanWebSocketClient("ws://localhost:8080");
 
 client.onReady(() -> {
+    // Subscribe to topics with parameters
+    client.subscribe("stock.chart", Map.of("symbol", "AAPL", "interval", "1m"));
     client.subscribe("board.posts", Map.of("page", 1.0, "size", 20.0));
-    client.subscribe("chart.cpu");
 });
 
-// Per-topic scoped data
-client.topic("board.posts").onReceive((key, value) -> {
-    if ("items".equals(key)) renderTable(value);
+// Each topic has its own onUpdate -- fires once per batch
+client.topic("stock.chart").onUpdate(payload -> {
+    System.out.println("Symbol: " + payload.get("meta.symbol"));
+    System.out.println("Candles: " + payload.get("candles.length"));
 });
 
 client.topic("board.posts").onUpdate(payload -> {
-    System.out.println("Posts keys: " + payload.keys());
-    System.out.println("Total: " + payload.get("totalCount"));
+    System.out.println("Total: " + payload.get("result.totalCount"));
+    System.out.println("Page: " + payload.get("result.page"));
 });
 
-client.topic("chart.cpu").onReceive((key, value) -> {
-    if ("value".equals(key)) updateChart(value);
+// Per-field callback (optional -- for fine-grained updates)
+client.topic("stock.chart").onReceive((key, value) -> {
+    // key = "candles.0.close", value = 189.50
+    // Called for every individual field change within this topic
 });
 
-// Change page -> triggers CHANGED_PARAMS event
+// Change params → server callback re-fires with CHANGED_PARAMS
 client.setParams("board.posts", Map.of("page", 2.0, "size", 20.0));
 
-// Stop watching CPU -> timer auto-cleanup
-client.unsubscribe("chart.cpu");
+// Switch symbol → server clears old data, fetches new
+client.setParams("stock.chart", Map.of("symbol", "GOOG", "interval", "1m"));
+
+// Unsubscribe when done
+client.unsubscribe("stock.chart");
 
 client.connect();
 ```
 
-### 4. Session Principal Topic Mode -- topics with authentication
+**Key points:**
+- Each topic's data is scoped -- `topic("stock.chart")` keys are isolated from `topic("board.posts")`
+- `topic.payload().set()` works exactly like `server.set()` -- auto-flattens, dedup, array shift detection
+- `setDelayedTask(ms)` creates a polling loop -- the callback re-runs every N ms
+- When client disconnects, all timers are automatically cleaned up
+
+---
+
+### 4. Session Principal Topic
+
+Combines topics with auth. The session knows who the user is (`session.principal()`), so the server can provide personalized data per-topic.
+
+**When to use:** Authenticated apps where each user sees different data based on their identity -- personal dashboards, per-user notifications, role-based data feeds.
 
 **Server:**
 
 ```java
 var server = new DanWebSocketServer(8080, Mode.SESSION_PRINCIPAL_TOPIC);
 
+// Auth setup -- same as principal mode
 server.enableAuthorization(true);
 server.onAuthorize((uuid, token) -> {
-    String user = verifyJWT(token);
-    server.authorize(uuid, token, user);
+    try {
+        String username = verifyJWT(token);
+        server.authorize(uuid, token, username);
+    } catch (Exception e) {
+        server.reject(uuid, "Invalid token");
+    }
 });
 
 server.topic().onSubscribe((session, topic) -> {
+
     if ("my.dashboard".equals(topic.name())) {
         topic.setCallback((event, t, s) -> {
-            // s.principal() = authenticated user
-            var data = db.getUserDashboard(s.principal(), t.params());
-            t.payload().set("widgets", data.widgets());
-            t.payload().set("notifications", data.count());
+            // s.principal() is the authenticated user name (e.g., "alice")
+            String user = s.principal();
+
+            if (event == EventType.CHANGED_PARAMS) t.payload().clear();
+
+            var dashboard = db.getUserDashboard(user, t.params());
+            t.payload().set("widgets", dashboard.widgets());
+            t.payload().set("notifications", Map.of(
+                "unread", dashboard.unreadCount(),
+                "items", dashboard.latestNotifications()
+            ));
         });
-        topic.setDelayedTask(5000); // refresh every 5s
+
+        topic.setDelayedTask(5000);  // refresh every 5s
+    }
+
+    if ("my.orders".equals(topic.name())) {
+        topic.setCallback((event, t, s) -> {
+            String user = s.principal();
+            String status = (String) t.params().getOrDefault("status", "open");
+            var orders = db.getOrders(user, status);
+
+            t.payload().set("orders", Map.of(
+                "items", orders,
+                "count", orders.size()
+            ));
+        });
+
+        topic.setDelayedTask(2000);
     }
 });
 ```
@@ -296,19 +451,39 @@ server.topic().onSubscribe((session, topic) -> {
 ```java
 var client = new DanWebSocketClient("ws://localhost:8080");
 
-client.onConnect(() -> client.authorize("alice-jwt-token"));
+// Auth first, then subscribe
+client.onConnect(() -> {
+    client.authorize(getStoredToken());
+});
 
 client.onReady(() -> {
-    client.subscribe("my.dashboard", Map.of("layout", "compact"));
+    // Now authenticated -- subscribe to personalized topics
+    client.subscribe("my.dashboard", Map.of("view", "compact"));
+    client.subscribe("my.orders", Map.of("status", "open"));
 });
 
 client.topic("my.dashboard").onUpdate(payload -> {
-    System.out.println("Widgets: " + payload.get("widgets"));
-    System.out.println("Notifications: " + payload.get("notifications"));
+    System.out.println("Unread: " + payload.get("notifications.unread"));
+    System.out.println("Widgets: " + payload.keys());
+});
+
+client.topic("my.orders").onUpdate(payload -> {
+    System.out.println("Orders: " + payload.get("orders.count"));
+});
+
+// Switch to closed orders
+client.setParams("my.orders", Map.of("status", "closed"));
+
+client.onError(err -> {
+    if ("AUTH_REJECTED".equals(err.code())) {
+        // redirect to login
+    }
 });
 
 client.connect();
 ```
+
+**Difference from `SESSION_TOPIC`:** The server callback receives `session` which has `session.principal()` -- the authenticated user name. This lets you query per-user data (orders, notifications, dashboards) without the client sending user identity in topic params.
 
 ---
 
@@ -771,7 +946,7 @@ A TypeScript server can serve Java clients and vice versa. Mix and match freely.
 
 ## Protocol
 
-See [dan-protocol-3.0.md](./dan-protocol-3.0.md) for the full binary protocol specification (DanProtocol v3.2).
+See [dan-protocol-3.0.md](./dan-protocol-3.0.md) for the full binary protocol specification (DanProtocol v3.3).
 
 ---
 
