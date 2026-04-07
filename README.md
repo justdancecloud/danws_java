@@ -900,6 +900,25 @@ server.enableAuthorization(true);                // default timeout 5s
 server.enableAuthorization(true, 10_000);        // custom timeout 10s
 ```
 
+### Debug Logging
+
+By default, all callback errors are silently caught. Enable debug logging to see them:
+
+```java
+// Simple — prints to stderr
+server.setDebug(true);
+
+// Custom logger
+server.setDebug((msg, err) -> {
+    logger.warn("[DanWS] " + msg, err);
+});
+
+// Client too
+client.setDebug(true);
+```
+
+Debug propagates automatically: Server → Session → TopicHandle, Client → TopicClientHandle.
+
 ---
 
 ## Auto-Detected Types
