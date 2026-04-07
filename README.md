@@ -43,7 +43,7 @@ The library handles:
 
 ```groovy
 dependencies {
-    implementation 'io.github.justdancecloud:dan-websocket:2.0.0'
+    implementation 'io.github.justdancecloud:dan-websocket:2.1.3'
 }
 ```
 
@@ -53,11 +53,26 @@ dependencies {
 <dependency>
     <groupId>io.github.justdancecloud</groupId>
     <artifactId>dan-websocket</artifactId>
-    <version>2.0.0</version>
+    <version>2.1.3</version>
 </dependency>
 ```
 
 Requires **Java 17+**.
+
+### Quick Start
+
+```java
+// Server
+var server = new DanWebSocketServer(8080, DanWebSocketServer.Mode.BROADCAST);
+server.set("price", Map.of("btc", 67000, "eth", 3200));
+
+// Client
+var client = new DanWebSocketClient("ws://localhost:8080");
+client.onUpdate(() -> System.out.println(client.get("price.btc"))); // 67000
+client.connect();
+```
+
+Server puts an object in. Client reads it out. Between the two — binary serialization, field-level dedup, batch flush — all automatic, zero config.
 
 ---
 
