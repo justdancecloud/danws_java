@@ -48,11 +48,18 @@ public class TopicClientHandle {
     void setIndex(int index) { this.index = index; }
     int index() { return index; }
 
+    private boolean dirty;
+
     void notify(String key, Object value) {
         for (var cb : onReceiveCbs) { try { cb.accept(key, value); } catch (Exception ignored) {} }
-        if (!onUpdateCbs.isEmpty()) {
-            TopicClientPayloadView view = new TopicClientPayloadView(this);
-            for (var cb : onUpdateCbs) { try { cb.accept(view); } catch (Exception ignored) {} }
-        }
+        dirty = true;
+    }
+
+    /** Fire onUpdate if dirty (called on SERVER_FLUSH_END). */
+    void flushUpdate() {
+        if (!dirty || onUpdateCbs.isEmpty()) return;
+        dirty = false;
+        TopicClientPayloadView view = new TopicClientPayloadView(this);
+        for (var cb : onUpdateCbs) { try { cb.accept(view); } catch (Exception ignored) {} }
     }
 }

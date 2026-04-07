@@ -1,8 +1,6 @@
 package com.danws.protocol;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 import java.util.function.Consumer;
 
 import static com.danws.protocol.DLE.*;
@@ -10,8 +8,11 @@ import static com.danws.protocol.DLE.*;
 public class StreamParser {
     private enum State { IDLE, AFTER_DLE, IN_FRAME, IN_FRAME_AFTER_DLE }
 
+    private static final int INITIAL_CAPACITY = 256;
+
     private State state = State.IDLE;
-    private final List<Byte> buffer = new ArrayList<>();
+    private byte[] buffer = new byte[INITIAL_CAPACITY];
+    private int bufferLen = 0;
 
     private Consumer<Frame> onFrame;
     private Runnable onHeartbeat;
@@ -35,7 +36,7 @@ public class StreamParser {
                 case AFTER_DLE -> {
                     if (b == STX) {
                         state = State.IN_FRAME;
-                        buffer.clear();
+                        bufferLen = 0;
                     } else if (b == ENQ) {
                         if (onHeartbeat != null) onHeartbeat.run();
                         state = State.IDLE;
@@ -49,27 +50,27 @@ public class StreamParser {
                     if (b == DLE_BYTE) {
                         state = State.IN_FRAME_AFTER_DLE;
                     } else {
-                        buffer.add(b);
+                        appendByte(b);
                     }
                 }
                 case IN_FRAME_AFTER_DLE -> {
                     if (b == ETX) {
                         try {
-                            byte[] body = toByteArray(buffer);
+                            byte[] body = Arrays.copyOf(buffer, bufferLen);
                             Frame frame = parseFrame(body);
                             if (onFrame != null) onFrame.accept(frame);
                         } catch (Exception e) {
                             emitError(e);
                         }
-                        buffer.clear();
+                        bufferLen = 0;
                         state = State.IDLE;
                     } else if (b == DLE_BYTE) {
-                        buffer.add(DLE_BYTE);
+                        appendByte(DLE_BYTE);
                         state = State.IN_FRAME;
                     } else {
                         emitError(new DanWSException("INVALID_DLE_SEQUENCE",
                                 "Invalid DLE in frame: 0x10 0x" + String.format("%02x", b)));
-                        buffer.clear();
+                        bufferLen = 0;
                         state = State.IDLE;
                     }
                 }
@@ -79,7 +80,7 @@ public class StreamParser {
 
     public void reset() {
         state = State.IDLE;
-        buffer.clear();
+        bufferLen = 0;
     }
 
     private Frame parseFrame(byte[] body) {
@@ -113,13 +114,14 @@ public class StreamParser {
                 || ft == FrameType.AUTH_OK || ft == FrameType.SERVER_FLUSH_END;
     }
 
-    private void emitError(Exception e) {
-        if (onError != null) onError.accept(e);
+    private void appendByte(byte b) {
+        if (bufferLen == buffer.length) {
+            buffer = Arrays.copyOf(buffer, buffer.length * 2);
+        }
+        buffer[bufferLen++] = b;
     }
 
-    private static byte[] toByteArray(List<Byte> list) {
-        byte[] arr = new byte[list.size()];
-        for (int i = 0; i < list.size(); i++) arr[i] = list.get(i);
-        return arr;
+    private void emitError(Exception e) {
+        if (onError != null) onError.accept(e);
     }
 }

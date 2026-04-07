@@ -14,6 +14,8 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 
+import com.danws.connection.ReconnectEngine;
+
 import java.net.URI;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -72,6 +74,11 @@ public class DanWebSocketClient {
     private final List<BiConsumer<String, Object>> onReceive = new ArrayList<>();
     private final List<Runnable> onUpdate = new ArrayList<>();
     private final List<Consumer<DanWSException>> onError = new ArrayList<>();
+    private final List<BiConsumer<Integer, Long>> onReconnecting = new ArrayList<>();
+    private final List<Runnable> onReconnect = new ArrayList<>();
+    private final List<Runnable> onReconnectFailed = new ArrayList<>();
+
+    private final ReconnectEngine reconnectEngine = new ReconnectEngine();
 
     public DanWebSocketClient(String url) {
         this.uri = URI.create(url);
@@ -81,6 +88,16 @@ public class DanWebSocketClient {
         parser.onFrame(this::handleFrame);
         parser.onHeartbeat(() -> sendRaw(Codec.encodeHeartbeat()));
         parser.onError(e -> {});
+
+        // Reconnect wiring
+        reconnectEngine.onAttempt(this::connect);
+        reconnectEngine.onReconnecting((attempt, delay) -> {
+            for (var cb : onReconnecting) { try { cb.accept(attempt, delay); } catch (Exception ignored) {} }
+        });
+        reconnectEngine.onExhausted(() -> {
+            state = State.DISCONNECTED;
+            for (var cb : onReconnectFailed) { try { cb.run(); } catch (Exception ignored) {} }
+        });
     }
 
     public String id() { return id; }
@@ -135,8 +152,9 @@ public class DanWebSocketClient {
 
     public void disconnect() {
         intentionalDisconnect = true;
-        state = State.DISCONNECTED;
+        reconnectEngine.stop();
         cleanup();
+        state = State.DISCONNECTED;
         onDisconnect.forEach(Runnable::run);
     }
 
@@ -183,6 +201,9 @@ public class DanWebSocketClient {
     public void onReceive(BiConsumer<String, Object> cb) { onReceive.add(cb); }
     /** Called once per server flush batch — use for rendering. */
     public void onUpdate(Runnable cb) { onUpdate.add(cb); }
+    public void onReconnecting(BiConsumer<Integer, Long> cb) { onReconnecting.add(cb); }
+    public void onReconnect(Runnable cb) { onReconnect.add(cb); }
+    public void onReconnectFailed(Runnable cb) { onReconnectFailed.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
 
     // ──── Netty Client Handler ────
@@ -235,16 +256,33 @@ public class DanWebSocketClient {
 
     // ──── Internals ────
 
+    /** Protocol version: 3.3 */
+    private static final byte PROTOCOL_MAJOR = 3;
+    private static final byte PROTOCOL_MINOR = 3;
+
     private void handleOpen() {
         state = State.IDENTIFYING;
-        sendFrame(new Frame(FrameType.IDENTIFY, 0, DataType.BINARY, uuidToBytes(id)));
+        // Send 18-byte IDENTIFY: 16-byte UUID + 2-byte protocol version
+        byte[] uuid = uuidToBytes(id);
+        byte[] payload = new byte[18];
+        System.arraycopy(uuid, 0, payload, 0, 16);
+        payload[16] = PROTOCOL_MAJOR;
+        payload[17] = PROTOCOL_MINOR;
+        sendFrame(new Frame(FrameType.IDENTIFY, 0, DataType.BINARY, payload));
         onConnect.forEach(Runnable::run);
     }
 
     private void handleClose() {
         if (intentionalDisconnect) return;
-        state = State.DISCONNECTED;
         onDisconnect.forEach(Runnable::run);
+
+        if (reconnectEngine.isActive()) {
+            state = State.RECONNECTING;
+            reconnectEngine.retry();
+        } else {
+            state = State.RECONNECTING;
+            reconnectEngine.start();
+        }
     }
 
     private void handleFrame(Frame frame) {
@@ -267,6 +305,7 @@ public class DanWebSocketClient {
                 if (state != State.READY) sendFrame(Frame.signal(FrameType.CLIENT_READY));
                 if (registry.size() == 0) {
                     state = State.READY;
+                    if (reconnectEngine.isActive()) { reconnectEngine.stop(); onReconnect.forEach(Runnable::run); }
                     onReady.forEach(Runnable::run);
                     if (!subscriptions.isEmpty()) sendTopicSync();
                 }
@@ -296,6 +335,7 @@ public class DanWebSocketClient {
                 }
                 if (state == State.SYNCHRONIZING) {
                     state = State.READY;
+                    if (reconnectEngine.isActive()) { reconnectEngine.stop(); onReconnect.forEach(Runnable::run); }
                     onReady.forEach(Runnable::run);
                     if (!subscriptions.isEmpty()) sendTopicSync();
                 }
@@ -404,6 +444,7 @@ public class DanWebSocketClient {
             }
             case SERVER_FLUSH_END -> {
                 for (var cb : onUpdate) { try { cb.run(); } catch (Exception ignored) {} }
+                for (var handle : topicClientHandles.values()) { handle.flushUpdate(); }
             }
             case SERVER_READY -> { /* acknowledged */ }
             case SERVER_RESET -> {

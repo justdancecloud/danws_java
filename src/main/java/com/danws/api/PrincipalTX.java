@@ -5,13 +5,12 @@ import com.danws.state.KeyRegistry;
 import com.danws.state.KeyRegistry.KeyEntry;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 public class PrincipalTX {
     private final String name;
     private final KeyRegistry registry = new KeyRegistry();
-    private final Map<Integer, Object> store = new ConcurrentHashMap<>();
+    private final Map<Integer, Object> store = new HashMap<>();
     private Consumer<Frame> onValueSet;
     private Runnable onKeysChanged;
     private TriConsumer<Frame, Frame, Frame> onIncrementalKey;

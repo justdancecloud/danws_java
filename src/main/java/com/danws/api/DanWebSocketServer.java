@@ -254,8 +254,8 @@ public class DanWebSocketServer {
             parser.onFrame(frame -> {
                 if (!identified) {
                     if (frame.frameType() != FrameType.IDENTIFY) { ctx.close(); return; }
-                    if (!(frame.payload() instanceof byte[] payload) || payload.length != 16) { ctx.close(); return; }
-                    clientUuid = bytesToUuid(payload);
+                    if (!(frame.payload() instanceof byte[] payload) || (payload.length != 16 && payload.length != 18)) { ctx.close(); return; }
+                    clientUuid = bytesToUuid(java.util.Arrays.copyOf(payload, 16));
                     chToUuid.put(ctx.channel().id(), clientUuid);
                     identified = true;
                     handleIdentified(ctx.channel(), clientUuid);
