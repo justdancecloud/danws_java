@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.8 (2026-04-07)
+- Fix: StreamParser buffer bounded to 1MB (prevents OOM from malformed frames)
+- Fix: Server.close() no longer calls .sync() (prevents deadlock from Netty thread)
+- Fix: Session.setLeaf() null-safe for sessionEnqueue (prevents NPE before bindSessionTX)
+- Fix: Principal index properly cleaned on reconnect (prevents duplicate entries)
+- Fix: TTL future cancelled before re-scheduling on rapid disconnect
+- Add: DanWebSocketClient.shutdownSharedGroup() for clean application exit
+
 ## 2.1.7 (2026-04-07)
 - Add: comprehensive mode tests (27 tests) — all 4 modes, mode guards, maxValueSize
 - Version sync: TypeScript and Java now share the same version number

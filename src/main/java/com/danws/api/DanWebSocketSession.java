@@ -143,10 +143,11 @@ public class DanWebSocketSession {
             int keyId = nextKeyId++;
             sessionRegistry.registerOne(keyId, key, newType);
             sessionStore.put(keyId, value);
-            if (sessionEnqueue != null) {
-                sessionEnqueue.accept(Frame.keyRegistration(keyId, newType, key));
-                sessionEnqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
-                sessionEnqueue.accept(Frame.value(keyId, newType, value));
+            Consumer<Frame> enq = sessionEnqueue;
+            if (enq != null) {
+                enq.accept(Frame.keyRegistration(keyId, newType, key));
+                enq.accept(Frame.signal(FrameType.SERVER_SYNC));
+                enq.accept(Frame.value(keyId, newType, value));
             }
             return;
         }

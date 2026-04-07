@@ -116,6 +116,12 @@ public class StreamParser {
 
     private void appendByte(byte b) {
         if (bufferLen == buffer.length) {
+            if (buffer.length >= 1_048_576) { // 1MB max
+                emitError(new DanWSException("FRAME_TOO_LARGE", "Frame exceeds 1MB"));
+                bufferLen = 0;
+                state = State.IDLE;
+                return;
+            }
             buffer = Arrays.copyOf(buffer, buffer.length * 2);
         }
         buffer[bufferLen++] = b;

@@ -245,8 +245,8 @@ public class DanWebSocketServer {
         principalIndex.clear();
         try {
             if (serverChannel != null) serverChannel.close().sync();
-            bossGroup.shutdownGracefully(0, 100, TimeUnit.MILLISECONDS).sync();
-            workerGroup.shutdownGracefully(0, 100, TimeUnit.MILLISECONDS).sync();
+            bossGroup.shutdownGracefully(0, 2000, TimeUnit.MILLISECONDS);
+            workerGroup.shutdownGracefully(0, 2000, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) { log("Error during server shutdown", e); }
     }
 
@@ -403,6 +403,12 @@ public class DanWebSocketServer {
     private void handleIdentified(Channel ch, String uuid) {
         InternalSession existing = sessions.get(uuid);
         if (existing != null) {
+            // Remove from principal index before reconnect to avoid leak
+            String oldPrincipal = existing.session.principal();
+            if (oldPrincipal != null) {
+                String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : oldPrincipal;
+                removeFromPrincipalIndex(effective, existing);
+            }
             if (existing.ch != null && existing.ch.isActive()) existing.ch.close();
             if (existing.ttlFuture != null) { existing.ttlFuture.cancel(false); existing.ttlFuture = null; }
             existing.ch = ch;
@@ -583,6 +589,7 @@ public class DanWebSocketServer {
         String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : p;
         if (effective != null) removeFromPrincipalIndex(effective, internal);
 
+        if (internal.ttlFuture != null) { internal.ttlFuture.cancel(false); internal.ttlFuture = null; }
         internal.ttlFuture = workerGroup.next().schedule(() -> {
             sessions.remove(uuid);
             for (var cb : onSessionExpired) { try { cb.accept(internal.session); } catch (Exception e) { log("onSessionExpired callback error", e); } }

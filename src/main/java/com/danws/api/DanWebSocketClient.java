@@ -53,6 +53,14 @@ public class DanWebSocketClient {
         SHARED_GROUP = group;
     }
 
+    /** Shut down the shared EventLoopGroup. Call on application exit. */
+    public static void shutdownSharedGroup() {
+        if (SHARED_GROUP != null) {
+            SHARED_GROUP.shutdownGracefully();
+            SHARED_GROUP = null;
+        }
+    }
+
     private final String id;
     private final URI uri;
     private State state = State.DISCONNECTED;
