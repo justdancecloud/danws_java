@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.1 (2026-04-07)
+- Refactor: extract shared ArrayDiffUtil (~289 lines removed)
+- Add ReconnectEngine with exponential backoff + jitter (client auto-reconnects)
+- TopicClientHandle.onUpdate now fires per-flush batch (not per-frame)
+- StreamParser: replace List\<Byte> with byte[] buffer (eliminates autoboxing GC)
+- PrincipalTX.store: ConcurrentHashMap → HashMap (EventLoop-only access)
+- Fix applyShiftLeft: always send length after shift (client length restore)
+- Fix Session: remove (double) cast on length — int consistently
+- IDENTIFY frame includes protocol version (v3.3), backward-compatible
+- Remove unused: arrayShiftCounters, matchesPrincipal, misleading reconnect callbacks
+
 ## 2.1.0 (2026-04-07)
 - **Protocol v3.3**: SERVER_FLUSH_END (0xFF) batch boundary frame
 - **Batch-level `onUpdate`**: fires once per BulkQueue flush (~100ms) instead of per-frame — prevents render storms
