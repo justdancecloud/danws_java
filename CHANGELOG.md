@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.2 (2026-04-07)
+- Add: client HeartbeatManager (10s send, 15s timeout detection)
+- Fix: previousArrays memory leak in PrincipalTX, Session, TopicPayload clear()
+- Fix: client.unsubscribe cleans topicClientHandles (memory leak)
+- Fix: Session.clearKey properly removes flattened sub-keys
+- Optimize: Session.sessionStore ConcurrentHashMap → HashMap
+- Refactor: extract shared UuidUtil (bytesToUuid/uuidToBytes)
+
 ## 2.1.1 (2026-04-07)
 - Refactor: extract shared ArrayDiffUtil (~289 lines removed)
 - Add ReconnectEngine with exponential backoff + jitter (client auto-reconnects)
