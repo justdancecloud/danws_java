@@ -184,7 +184,10 @@ public class DanWebSocketClient {
     public void subscribe(String topicName) { subscribe(topicName, Map.of()); }
 
     public void unsubscribe(String topicName) {
-        if (subscriptions.remove(topicName) != null) sendTopicSync();
+        if (subscriptions.remove(topicName) != null) {
+            topicClientHandles.remove(topicName);
+            sendTopicSync();
+        }
     }
 
     public void setParams(String topicName, Map<String, Object> params) {
