@@ -5,7 +5,7 @@
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.justdancecloud/dan-websocket)](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket)
 [![npm](https://img.shields.io/npm/v/dan-websocket)](https://www.npmjs.com/package/dan-websocket)
 
-Java implementation of [DanProtocol v3.3](./dan-protocol-3.0.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
+Java implementation of [DanProtocol v3.3](./dan-protocol.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
 
 ---
 
@@ -53,7 +53,7 @@ dependencies {
 <dependency>
     <groupId>io.github.justdancecloud</groupId>
     <artifactId>dan-websocket</artifactId>
-    <version>2.1.5</version>
+    <version>2.1.7</version>
 </dependency>
 ```
 
@@ -875,6 +875,12 @@ new DanWebSocketServer(8080, "/ws", Mode.PRINCIPAL, 300_000);
 
 // Custom flush interval (ms)
 new DanWebSocketServer(8080, "/ws", Mode.BROADCAST, 600_000, 50);
+
+// Full options: port, path, mode, ttl, flushInterval, maxMessageSize, maxValueSize
+new DanWebSocketServer(8080, "/ws", Mode.BROADCAST, 600_000, 100,
+    1_048_576,  // maxMessageSize: 1MB (default)
+    65_536      // maxValueSize: 64KB (default)
+);
 ```
 
 | Parameter | Default | Description |
@@ -884,6 +890,8 @@ new DanWebSocketServer(8080, "/ws", Mode.BROADCAST, 600_000, 50);
 | `mode` | `PRINCIPAL` | One of the 4 modes |
 | `ttlMs` | `600000` (10 min) | Session time-to-live after disconnect |
 | `flushIntervalMs` | `100` | Bulk queue flush interval in ms |
+| `maxMessageSize` | `1048576` (1MB) | Max incoming WebSocket message size in bytes |
+| `maxValueSize` | `65536` (64KB) | Max single serialized value size. Throws `VALUE_TOO_LARGE` if exceeded |
 
 ### Authorization
 
@@ -931,6 +939,35 @@ dan-websocket is engineered for high throughput and low latency:
 
 ---
 
+## Error Codes
+
+All errors are instances of `DanWSException` with a `code()` method:
+
+```java
+client.onError(err -> {
+    System.out.println(err.code());      // "AUTH_REJECTED"
+    System.out.println(err.getMessage()); // "Invalid token"
+});
+```
+
+| Code | Where | Description |
+|------|-------|-------------|
+| `HEARTBEAT_TIMEOUT` | Client | No heartbeat from server within 15s |
+| `AUTH_REJECTED` | Client | Server rejected the auth token |
+| `UNKNOWN_KEY_ID` | Client | Received value for unregistered key |
+| `REMOTE_ERROR` | Client/Session | Error frame from remote peer |
+| `INVALID_MODE` | Server/Session | API not available in current mode |
+| `VALUE_TOO_LARGE` | Server | Serialized value exceeds `maxValueSize` |
+| `INVALID_VALUE_TYPE` | Internal | Value type mismatch for DataType |
+| `UNKNOWN_DATA_TYPE` | Internal | Unrecognized DataType byte |
+| `FRAME_PARSE_ERROR` | Internal | Malformed binary frame |
+| `INVALID_DLE_SEQUENCE` | Internal | Invalid DLE escape in wire data |
+| `INVALID_KEY_PATH` | Internal | Key path empty, invalid, or exceeds 200 bytes |
+| `FLATTEN_DEPTH_EXCEEDED` | Internal | Auto-flatten depth > 10 |
+| `CIRCULAR_REFERENCE` | Internal | Circular reference in object |
+
+---
+
 ## Cross-Language Support
 
 dan-websocket is available in two languages with identical APIs and wire-compatible binary protocol:
@@ -946,7 +983,7 @@ A TypeScript server can serve Java clients and vice versa. Mix and match freely.
 
 ## Protocol
 
-See [dan-protocol-3.0.md](./dan-protocol-3.0.md) for the full binary protocol specification (DanProtocol v3.3).
+See [dan-protocol.md](./dan-protocol.md) for the full binary protocol specification (DanProtocol v3.3).
 
 ---
 
