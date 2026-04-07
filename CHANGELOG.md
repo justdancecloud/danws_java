@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.1.3 (2026-04-07)
+- Fix: client unsubscribe cleans topicClientHandles (memory leak)
+
 ## 2.1.2 (2026-04-07)
 - Add: client HeartbeatManager (10s send, 15s timeout detection)
 - Fix: previousArrays memory leak in PrincipalTX, Session, TopicPayload clear()
