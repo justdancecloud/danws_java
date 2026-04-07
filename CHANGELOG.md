@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.9 (2026-04-07)
+- Fix: StreamParser buffer limit now driven by maxMessageSize setting (was hardcoded 1MB)
+- maxMessageSize flows to both Netty maxFrameSize and StreamParser consistently
+
 ## 2.1.8 (2026-04-07)
 - Fix: StreamParser buffer bounded to 1MB (prevents OOM from malformed frames)
 - Fix: Server.close() no longer calls .sync() (prevents deadlock from Netty thread)
