@@ -9,6 +9,7 @@ import io.netty.util.concurrent.ScheduledFuture;
 
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -19,6 +20,7 @@ import java.util.function.Consumer;
 public class BulkQueue {
 
     private final long flushIntervalMs;
+    private final BiConsumer<String, Exception> log;
 
     private final EventLoop eventLoop;
     private final List<Frame> queue = new ArrayList<>();
@@ -28,12 +30,17 @@ public class BulkQueue {
     private boolean disposed;
 
     public BulkQueue(EventLoop eventLoop) {
-        this(eventLoop, 100);
+        this(eventLoop, 100, null);
     }
 
     public BulkQueue(EventLoop eventLoop, long flushIntervalMs) {
+        this(eventLoop, flushIntervalMs, null);
+    }
+
+    public BulkQueue(EventLoop eventLoop, long flushIntervalMs, BiConsumer<String, Exception> log) {
         this.eventLoop = eventLoop;
         this.flushIntervalMs = flushIntervalMs;
+        this.log = log;
     }
 
     public void onFlush(Consumer<byte[]> fn) {
@@ -91,7 +98,7 @@ public class BulkQueue {
         byte[] encoded = Codec.encodeBatch(batch);
         try {
             onFlush.accept(encoded);
-        } catch (Exception ignored) {}
+        } catch (Exception e) { if (log != null) log.accept("BulkQueue flush error", e); }
     }
 
     public void clear() {

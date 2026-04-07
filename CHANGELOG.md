@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.4 (2026-04-07)
+- Add: debug logger system — `server.setDebug(true)` / `client.setDebug(true)` or custom `BiConsumer<String, Exception>`
+- Fix: all silent `catch (Exception ignored)` blocks now route through debug logger
+- Debug propagates: Server → Session → TopicHandle, Client → TopicClientHandle, BulkQueue
+
 ## 2.1.3 (2026-04-07)
 - Fix: client unsubscribe cleans topicClientHandles (memory leak)
 

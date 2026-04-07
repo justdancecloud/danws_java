@@ -10,12 +10,18 @@ public class TopicClientHandle {
     private int index = -1;
 
     private final DanWebSocketClient client;
+    private final BiConsumer<String, Exception> log;
     private final List<BiConsumer<String, Object>> onReceiveCbs = new ArrayList<>();
     private final List<Consumer<TopicClientPayloadView>> onUpdateCbs = new ArrayList<>();
 
     TopicClientHandle(String name, DanWebSocketClient client) {
+        this(name, client, null);
+    }
+
+    TopicClientHandle(String name, DanWebSocketClient client, BiConsumer<String, Exception> log) {
         this.name = name;
         this.client = client;
+        this.log = log;
     }
 
     public String name() { return name; }
@@ -51,7 +57,7 @@ public class TopicClientHandle {
     private boolean dirty;
 
     void notify(String key, Object value) {
-        for (var cb : onReceiveCbs) { try { cb.accept(key, value); } catch (Exception ignored) {} }
+        for (var cb : onReceiveCbs) { try { cb.accept(key, value); } catch (Exception e) { if (log != null) log.accept("TopicClientHandle onReceive callback error", e); } }
         dirty = true;
     }
 
@@ -60,6 +66,6 @@ public class TopicClientHandle {
         if (!dirty || onUpdateCbs.isEmpty()) return;
         dirty = false;
         TopicClientPayloadView view = new TopicClientPayloadView(this);
-        for (var cb : onUpdateCbs) { try { cb.accept(view); } catch (Exception ignored) {} }
+        for (var cb : onUpdateCbs) { try { cb.accept(view); } catch (Exception e) { if (log != null) log.accept("TopicClientHandle onUpdate callback error", e); } }
     }
 }

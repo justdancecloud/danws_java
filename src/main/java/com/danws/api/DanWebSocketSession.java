@@ -6,6 +6,7 @@ import com.danws.state.KeyRegistry;
 import io.netty.channel.EventLoop;
 
 import java.util.*;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -43,6 +44,7 @@ public class DanWebSocketSession {
     private int topicIndex = 0;
     private final Map<String, TopicInfo> topics = new LinkedHashMap<>();
     private EventLoop eventLoop;
+    private BiConsumer<String, Exception> debug;
 
     public DanWebSocketSession(String clientUuid) {
         this.id = clientUuid;
@@ -229,6 +231,14 @@ public class DanWebSocketSession {
         this.sessionBound = true;
     }
 
+    void setDebug(BiConsumer<String, Exception> debug) {
+        this.debug = debug;
+    }
+
+    private void log(String msg, Exception err) {
+        if (debug != null) debug.accept(msg, err);
+    }
+
     void setEventLoop(EventLoop eventLoop) {
         this.eventLoop = eventLoop;
     }
@@ -320,7 +330,7 @@ public class DanWebSocketSession {
         if (sessionEnqueue != null) {
             payload.bind(sessionEnqueue, this::triggerSessionResync);
         }
-        TopicHandle handle = new TopicHandle(name, params, payload, this, eventLoop);
+        TopicHandle handle = new TopicHandle(name, params, payload, this, eventLoop, (msg, err) -> log(msg, err));
         topicHandles.put(name, handle);
         topics.put(name, new TopicInfo(name, params));
         return handle;

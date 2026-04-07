@@ -79,6 +79,7 @@ public class DanWebSocketClient {
     private final List<Runnable> onReconnect = new ArrayList<>();
     private final List<Runnable> onReconnectFailed = new ArrayList<>();
 
+    private BiConsumer<String, Exception> debug;
     private final ReconnectEngine reconnectEngine = new ReconnectEngine();
 
     // Heartbeat
@@ -97,21 +98,36 @@ public class DanWebSocketClient {
         // Setup parser callbacks once (reuse)
         parser.onFrame(this::handleFrame);
         parser.onHeartbeat(() -> lastHeartbeatReceived = System.currentTimeMillis());
-        parser.onError(e -> {});
+        parser.onError(e -> log("Stream parser error", e));
 
         // Reconnect wiring
         reconnectEngine.onAttempt(this::connect);
         reconnectEngine.onReconnecting((attempt, delay) -> {
-            for (var cb : onReconnecting) { try { cb.accept(attempt, delay); } catch (Exception ignored) {} }
+            for (var cb : onReconnecting) { try { cb.accept(attempt, delay); } catch (Exception e) { log("onReconnecting callback error", e); } }
         });
         reconnectEngine.onExhausted(() -> {
             state = State.DISCONNECTED;
-            for (var cb : onReconnectFailed) { try { cb.run(); } catch (Exception ignored) {} }
+            for (var cb : onReconnectFailed) { try { cb.run(); } catch (Exception e) { log("onReconnectFailed callback error", e); } }
         });
     }
 
     public String id() { return id; }
     public State state() { return state; }
+
+    public void setDebug(boolean enabled) {
+        this.debug = enabled ? (msg, err) -> {
+            System.err.println("[DanWS] " + msg);
+            if (err != null) err.printStackTrace(System.err);
+        } : null;
+    }
+
+    public void setDebug(BiConsumer<String, Exception> logger) {
+        this.debug = logger;
+    }
+
+    private void log(String msg, Exception err) {
+        if (debug != null) debug.accept(msg, err);
+    }
 
     public Object get(String key) {
         KeyEntry entry = registry.getByPath(key);
@@ -200,7 +216,7 @@ public class DanWebSocketClient {
 
     public TopicClientHandle topic(String name) {
         return topicClientHandles.computeIfAbsent(name, n -> {
-            TopicClientHandle h = new TopicClientHandle(n, this);
+            TopicClientHandle h = new TopicClientHandle(n, this, (msg, err) -> log(msg, err));
             Integer idx = topicIndexMap.get(n);
             if (idx != null) h.setIndex(idx);
             return h;
@@ -346,7 +362,7 @@ public class DanWebSocketClient {
                             if (handle != null) handle.notify(key, frame.payload());
                         }
                     } else {
-                        for (var cb : onReceive) { try { cb.accept(path, frame.payload()); } catch (Exception ignored) {} }
+                        for (var cb : onReceive) { try { cb.accept(path, frame.payload()); } catch (Exception e) { log("onReceive callback error", e); } }
                     }
                 }
                 if (state == State.SYNCHRONIZING) {
@@ -402,7 +418,7 @@ public class DanWebSocketClient {
                         }
                     } else {
                         for (var cb : onReceive) {
-                            try { cb.accept(prefix + ".length", store.get(frame.keyId())); } catch (Exception ignored) {}
+                            try { cb.accept(prefix + ".length", store.get(frame.keyId())); } catch (Exception e) { log("onReceive callback error", e); }
                         }
                     }
                 }
@@ -453,13 +469,13 @@ public class DanWebSocketClient {
                         }
                     } else {
                         for (var cb : onReceive) {
-                            try { cb.accept(prefix + ".length", store.get(frame.keyId())); } catch (Exception ignored) {}
+                            try { cb.accept(prefix + ".length", store.get(frame.keyId())); } catch (Exception e) { log("onReceive callback error", e); }
                         }
                     }
                 }
             }
             case SERVER_FLUSH_END -> {
-                for (var cb : onUpdate) { try { cb.run(); } catch (Exception ignored) {} }
+                for (var cb : onUpdate) { try { cb.run(); } catch (Exception e) { log("onUpdate callback error", e); } }
                 for (var handle : topicClientHandles.values()) { handle.flushUpdate(); }
             }
             case SERVER_READY -> { /* acknowledged */ }
@@ -535,7 +551,7 @@ public class DanWebSocketClient {
         hbCheckTask = HB_SCHEDULER.scheduleAtFixedRate(() -> {
             if (System.currentTimeMillis() - lastHeartbeatReceived > HB_TIMEOUT) {
                 stopHeartbeat();
-                for (var cb : onError) { try { cb.accept(new DanWSException("HEARTBEAT_TIMEOUT", "No heartbeat received")); } catch (Exception ignored) {} }
+                for (var cb : onError) { try { cb.accept(new DanWSException("HEARTBEAT_TIMEOUT", "No heartbeat received")); } catch (Exception e) { log("onError callback error", e); } }
                 cleanup();
                 handleClose();
             }
@@ -548,7 +564,7 @@ public class DanWebSocketClient {
     }
 
     private void cleanup() {
-        if (channel != null) { try { channel.close(); } catch (Exception ignored) {} channel = null; }
+        if (channel != null) { try { channel.close(); } catch (Exception e) { log("Error closing channel", e); } channel = null; }
     }
 
     private static String generateUUIDv7() {
