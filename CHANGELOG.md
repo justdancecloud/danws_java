@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.2.0 (2026-04-07) — Stable Release
+
+First stable release. All 4 modes fully tested and documented.
+
+**Features:**
+- `maxMessageSize` (default 1MB) — Netty maxFrameSize + StreamParser buffer limit, configurable
+- `maxValueSize` (default 64KB) — per-value size limit with VALUE_TOO_LARGE error
+- `setDebug(boolean)` / `setDebug(BiConsumer)` — injectable debug logger
+- `DanWebSocketClient.shutdownSharedGroup()` — clean application exit
+
+**Bug Fixes:**
+- StreamParser buffer bounded by maxMessageSize (prevents OOM)
+- Server.close() no longer deadlocks from Netty thread
+- Session.setLeaf() null-safe for sessionEnqueue
+- Principal index properly cleaned on reconnect
+- TTL future cancelled before re-scheduling
+
+**Tests:**
+- Comprehensive mode tests (27 tests covering all 4 modes)
+- Mode guards, maxValueSize enforcement
+
+**Documentation:**
+- SECURITY.md — vulnerability reporting, security design, threading safety
+- CONTRIBUTING.md — dev setup, PR process, code style
+- docs/architecture.md — layer diagram, data flow, Netty threading model
+- docs/migration.md — version migration guides
+
 ## 2.1.9 (2026-04-07)
 - Fix: StreamParser buffer limit now driven by maxMessageSize setting (was hardcoded 1MB)
 - maxMessageSize flows to both Netty maxFrameSize and StreamParser consistently
