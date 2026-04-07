@@ -374,11 +374,6 @@ public class DanWebSocketServer {
         });
     }
 
-    private boolean matchesPrincipal(InternalSession i, String principalName) {
-        if (mode == Mode.BROADCAST) return BROADCAST_PRINCIPAL.equals(principalName);
-        return Objects.equals(i.session.principal(), principalName);
-    }
-
     private void handleIdentified(Channel ch, String uuid) {
         InternalSession existing = sessions.get(uuid);
         if (existing != null) {

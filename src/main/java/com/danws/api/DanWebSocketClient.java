@@ -70,8 +70,6 @@ public class DanWebSocketClient {
     private final List<Runnable> onDisconnect = new ArrayList<>();
     private final List<Runnable> onReady = new ArrayList<>();
     private final List<BiConsumer<String, Object>> onReceive = new ArrayList<>();
-    private final List<Runnable> onReconnect = new ArrayList<>();
-    private final List<Runnable> onReconnectFailed = new ArrayList<>();
     private final List<Runnable> onUpdate = new ArrayList<>();
     private final List<Consumer<DanWSException>> onError = new ArrayList<>();
 
@@ -183,8 +181,6 @@ public class DanWebSocketClient {
     public void onDisconnect(Runnable cb) { onDisconnect.add(cb); }
     public void onReady(Runnable cb) { onReady.add(cb); }
     public void onReceive(BiConsumer<String, Object> cb) { onReceive.add(cb); }
-    public void onReconnect(Runnable cb) { onReconnect.add(cb); }
-    public void onReconnectFailed(Runnable cb) { onReconnectFailed.add(cb); }
     /** Called once per server flush batch — use for rendering. */
     public void onUpdate(Runnable cb) { onUpdate.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
