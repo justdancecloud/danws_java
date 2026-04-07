@@ -2,8 +2,12 @@ build/
 .gradle/
 *.md
 !README.md
-!dan-protocol-3.0.md
+!dan-protocol.md
 !CHANGELOG.md
+!CONTRIBUTING.md
+!SECURITY.md
+!docs/*.md
+!docs/**/*.md
 .env
 *.class
 *.jar
