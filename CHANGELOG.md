@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.5 (2026-04-07)
+- Add: `maxMessageSize` (default 1MB) — limits incoming WebSocket frame size via Netty maxFrameSize
+- Add: `maxValueSize` (default 64KB) — throws VALUE_TOO_LARGE if serialized value exceeds limit
+- Size limits propagate to PrincipalTX, Session, TopicPayload
+
 ## 2.1.4 (2026-04-07)
 - Add: debug logger system — `server.setDebug(true)` / `client.setDebug(true)` or custom `BiConsumer<String, Exception>`
 - Fix: all silent `catch (Exception ignored)` blocks now route through debug logger

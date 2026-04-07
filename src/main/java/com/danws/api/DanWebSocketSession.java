@@ -45,6 +45,7 @@ public class DanWebSocketSession {
     private final Map<String, TopicInfo> topics = new LinkedHashMap<>();
     private EventLoop eventLoop;
     private BiConsumer<String, Exception> debug;
+    private int maxValueSize = 65_536;
 
     public DanWebSocketSession(String clientUuid) {
         this.id = clientUuid;
@@ -131,7 +132,10 @@ public class DanWebSocketSession {
     private void setLeaf(String key, Object value) {
         KeyRegistry.validateKeyPath(key);
         DataType newType = DataType.detect(value);
-        Serializer.serialize(newType, value);
+        byte[] serialized = Serializer.serialize(newType, value);
+        if (maxValueSize > 0 && serialized.length > maxValueSize) {
+            throw new DanWSException("VALUE_TOO_LARGE", "Serialized value for \"" + key + "\" is " + serialized.length + " bytes, exceeds maxValueSize (" + maxValueSize + ")");
+        }
 
         KeyRegistry.KeyEntry existing = sessionRegistry.getByPath(key);
 
@@ -235,6 +239,10 @@ public class DanWebSocketSession {
         this.debug = debug;
     }
 
+    void setMaxValueSize(int size) {
+        this.maxValueSize = size;
+    }
+
     private void log(String msg, Exception err) {
         if (debug != null) debug.accept(msg, err);
     }
@@ -326,7 +334,7 @@ public class DanWebSocketSession {
 
     TopicHandle createTopicHandle(String name, Map<String, Object> params, int wireIndex) {
         if (wireIndex >= topicIndex) topicIndex = wireIndex + 1;
-        TopicPayload payload = new TopicPayload(wireIndex, () -> nextKeyId++);
+        TopicPayload payload = new TopicPayload(wireIndex, () -> nextKeyId++, maxValueSize);
         if (sessionEnqueue != null) {
             payload.bind(sessionEnqueue, this::triggerSessionResync);
         }

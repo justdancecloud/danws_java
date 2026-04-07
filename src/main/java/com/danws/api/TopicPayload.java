@@ -18,10 +18,16 @@ public class TopicPayload {
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
     private final Map<String, String> wirePathCache = new HashMap<>();
     private final Map<String, List<Object>> previousArrays = new HashMap<>();
+    private final int maxValueSize;
 
     public TopicPayload(int index, IntSupplier allocateKeyId) {
+        this(index, allocateKeyId, 65_536);
+    }
+
+    public TopicPayload(int index, IntSupplier allocateKeyId, int maxValueSize) {
         this.index = index;
         this.allocateKeyId = allocateKeyId;
+        this.maxValueSize = maxValueSize;
     }
 
     void bind(Consumer<Frame> enqueue, Runnable onResync) {
@@ -87,7 +93,10 @@ public class TopicPayload {
     private boolean setLeafInternal(String key, Object value) {
         com.danws.state.KeyRegistry.validateKeyPath(key);
         DataType newType = DataType.detect(value);
-        Serializer.serialize(newType, value);
+        byte[] serialized = Serializer.serialize(newType, value);
+        if (maxValueSize > 0 && serialized.length > maxValueSize) {
+            throw new DanWSException("VALUE_TOO_LARGE", "Serialized value for \"" + key + "\" is " + serialized.length + " bytes, exceeds maxValueSize (" + maxValueSize + ")");
+        }
 
         Entry existing = entries.get(key);
 
@@ -120,7 +129,10 @@ public class TopicPayload {
     private void setLeafDirect(String key, Object value) {
         com.danws.state.KeyRegistry.validateKeyPath(key);
         DataType newType = DataType.detect(value);
-        Serializer.serialize(newType, value);
+        byte[] serialized = Serializer.serialize(newType, value);
+        if (maxValueSize > 0 && serialized.length > maxValueSize) {
+            throw new DanWSException("VALUE_TOO_LARGE", "Serialized value for \"" + key + "\" is " + serialized.length + " bytes, exceeds maxValueSize (" + maxValueSize + ")");
+        }
 
         Entry existing = entries.get(key);
 

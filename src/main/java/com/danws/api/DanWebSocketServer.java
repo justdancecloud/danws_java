@@ -34,6 +34,8 @@ public class DanWebSocketServer {
     private final long ttl;
     private final long flushIntervalMs;
     private final String path;
+    private final long maxMessageSize;
+    private final int maxValueSize;
     private boolean authEnabled;
     private long authTimeout = 5000;
 
@@ -59,14 +61,20 @@ public class DanWebSocketServer {
     private final TopicNamespace topicNamespace = new TopicNamespace();
 
     public DanWebSocketServer(int port, String path, Mode mode, long ttlMs) {
-        this(port, path, mode, ttlMs, 100);
+        this(port, path, mode, ttlMs, 100, 1_048_576, 65_536);
     }
 
     public DanWebSocketServer(int port, String path, Mode mode, long ttlMs, long flushIntervalMs) {
+        this(port, path, mode, ttlMs, flushIntervalMs, 1_048_576, 65_536);
+    }
+
+    public DanWebSocketServer(int port, String path, Mode mode, long ttlMs, long flushIntervalMs, long maxMessageSize, int maxValueSize) {
         this.mode = (mode == Mode.INDIVIDUAL) ? Mode.PRINCIPAL : mode;
         this.ttl = ttlMs;
         this.flushIntervalMs = flushIntervalMs;
         this.path = path;
+        this.maxMessageSize = maxMessageSize;
+        this.maxValueSize = maxValueSize;
 
         try {
             ServerBootstrap b = new ServerBootstrap();
@@ -78,10 +86,11 @@ public class DanWebSocketServer {
              .childHandler(new ChannelInitializer<SocketChannel>() {
                  @Override
                  protected void initChannel(SocketChannel ch) {
+                     int aggregatorSize = (int) Math.min(maxMessageSize, Integer.MAX_VALUE);
                      ch.pipeline().addLast(
                          new HttpServerCodec(),
-                         new HttpObjectAggregator(65536),
-                         new WebSocketServerProtocolHandler(DanWebSocketServer.this.path, null, true, 65536),
+                         new HttpObjectAggregator(aggregatorSize),
+                         new WebSocketServerProtocolHandler(DanWebSocketServer.this.path, null, true, (int) Math.min(maxMessageSize, Integer.MAX_VALUE)),
                          new ServerFrameHandler()
                      );
                  }
@@ -356,7 +365,7 @@ public class DanWebSocketServer {
 
     private PrincipalTX getPrincipal(String name) {
         return principals.computeIfAbsent(name, n -> {
-            PrincipalTX ptx = new PrincipalTX(n);
+            PrincipalTX ptx = new PrincipalTX(n, maxValueSize);
             if (!isTopicMode()) bindPrincipalTX(ptx);
             return ptx;
         });
@@ -424,6 +433,7 @@ public class DanWebSocketServer {
 
         DanWebSocketSession session = new DanWebSocketSession(uuid);
         session.setDebug(this.debug);
+        session.setMaxValueSize(this.maxValueSize);
         session.setEventLoop(ch.eventLoop());
         BulkQueue bulkQueue = new BulkQueue(ch.eventLoop(), flushIntervalMs, this.debug);
         HeartbeatManager heartbeat = new HeartbeatManager(ch.eventLoop());

@@ -21,8 +21,15 @@ public class PrincipalTX {
     @FunctionalInterface
     interface TriConsumer<A, B, C> { void accept(A a, B b, C c); }
 
+    private final int maxValueSize;
+
     public PrincipalTX(String name) {
+        this(name, 65_536);
+    }
+
+    public PrincipalTX(String name, int maxValueSize) {
         this.name = name;
+        this.maxValueSize = maxValueSize;
     }
 
     public String name() { return name; }
@@ -89,7 +96,10 @@ public class PrincipalTX {
     private void setLeaf(String key, Object value) {
         KeyRegistry.validateKeyPath(key);
         DataType newType = DataType.detect(value);
-        Serializer.serialize(newType, value);
+        byte[] serialized = Serializer.serialize(newType, value);
+        if (maxValueSize > 0 && serialized.length > maxValueSize) {
+            throw new DanWSException("VALUE_TOO_LARGE", "Serialized value for \"" + key + "\" is " + serialized.length + " bytes, exceeds maxValueSize (" + maxValueSize + ")");
+        }
 
         KeyEntry existing = registry.getByPath(key);
 
