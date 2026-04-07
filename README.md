@@ -62,17 +62,43 @@ Requires **Java 17+**.
 ### Quick Start
 
 ```java
-// Server
+// Server — just set objects. That's it.
 var server = new DanWebSocketServer(8080, DanWebSocketServer.Mode.BROADCAST);
-server.set("price", Map.of("btc", 67000, "eth", 3200));
 
-// Client
+server.set("price", Map.of("btc", 67000, "eth", 3200));
+// Internally: "price" is split into price.btc (Float64, 8 bytes) and price.eth (Float64, 8 bytes).
+// Each client receives only these two binary frames — not a JSON blob.
+```
+
+```java
+// Client — just read values. No parsing, no schema, no boilerplate.
 var client = new DanWebSocketClient("ws://localhost:8080");
-client.onUpdate(() -> System.out.println(client.get("price.btc"))); // 67000
+
+client.onUpdate(() -> {
+    System.out.println(client.get("price.btc"));  // 67000
+    System.out.println(client.get("price.eth"));   // 3200
+    // This callback fires once per server flush (~100ms batch),
+    // not once per field. Safe for rendering — no render storms.
+});
+
 client.connect();
 ```
 
-Only changed fields are binary-encoded and sent — up to **99% less traffic** than re-sending full JSON. Drop in the library, cut your network costs.
+Now update just one field:
+
+```java
+server.set("price", Map.of("btc", 67100, "eth", 3200));
+// Only price.btc changed → only 1 frame (8 bytes) goes over the wire.
+// price.eth is identical → not sent. Zero waste.
+```
+
+**What just happened?**
+- Server: you wrote a plain Java Map.
+- Wire: only the changed leaf field (`btc`) traveled as a binary-encoded 8-byte Float64.
+- Client: you read it back with `client.get("price.btc")`.
+- No JSON serialization. No manual diffing. No field-by-field subscriptions.
+
+This is the core idea: **objects in, objects out, binary in between**. Only changed fields are sent — up to **99% less traffic** than re-sending full JSON. Drop in the library, cut your network costs.
 
 ---
 
