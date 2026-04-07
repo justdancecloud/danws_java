@@ -43,7 +43,7 @@ The library handles:
 
 ```groovy
 dependencies {
-    implementation 'io.github.justdancecloud:dan-websocket:2.1.5'
+    implementation 'io.github.justdancecloud:dan-websocket:2.1.7'
 }
 ```
 
