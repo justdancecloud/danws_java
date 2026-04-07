@@ -263,7 +263,7 @@ public class DanWebSocketServer {
 
     private class ServerFrameHandler extends SimpleChannelInboundHandler<WebSocketFrame> {
 
-        private final StreamParser parser = new StreamParser();
+        private final StreamParser parser = new StreamParser((int) maxMessageSize);
         private boolean identified = false;
         private String clientUuid = "";
 

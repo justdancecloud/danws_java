@@ -9,14 +9,22 @@ public class StreamParser {
     private enum State { IDLE, AFTER_DLE, IN_FRAME, IN_FRAME_AFTER_DLE }
 
     private static final int INITIAL_CAPACITY = 256;
+    private static final int DEFAULT_MAX_BUFFER = 1_048_576; // 1MB
 
     private State state = State.IDLE;
     private byte[] buffer = new byte[INITIAL_CAPACITY];
     private int bufferLen = 0;
+    private final int maxBufferSize;
 
     private Consumer<Frame> onFrame;
     private Runnable onHeartbeat;
     private Consumer<Exception> onError;
+
+    public StreamParser() { this(DEFAULT_MAX_BUFFER); }
+
+    public StreamParser(int maxBufferSize) {
+        this.maxBufferSize = maxBufferSize > 0 ? maxBufferSize : DEFAULT_MAX_BUFFER;
+    }
 
     public void onFrame(Consumer<Frame> callback) { this.onFrame = callback; }
     public void onHeartbeat(Runnable callback) { this.onHeartbeat = callback; }
@@ -116,8 +124,8 @@ public class StreamParser {
 
     private void appendByte(byte b) {
         if (bufferLen == buffer.length) {
-            if (buffer.length >= 1_048_576) { // 1MB max
-                emitError(new DanWSException("FRAME_TOO_LARGE", "Frame exceeds 1MB"));
+            if (buffer.length >= maxBufferSize) {
+                emitError(new DanWSException("FRAME_TOO_LARGE", "Frame exceeds " + maxBufferSize + " bytes"));
                 bufferLen = 0;
                 state = State.IDLE;
                 return;
