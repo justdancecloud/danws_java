@@ -117,6 +117,7 @@ public final class Codec {
                 || ft == FrameType.CLIENT_RESYNC_REQ
                 || ft == FrameType.CLIENT_RESET
                 || ft == FrameType.SERVER_RESYNC_REQ
-                || ft == FrameType.AUTH_OK;
+                || ft == FrameType.AUTH_OK
+                || ft == FrameType.SERVER_FLUSH_END;
     }
 }

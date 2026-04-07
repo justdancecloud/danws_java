@@ -110,7 +110,7 @@ public class StreamParser {
                 || ft == FrameType.CLIENT_SYNC || ft == FrameType.SERVER_READY
                 || ft == FrameType.SERVER_RESET || ft == FrameType.CLIENT_RESYNC_REQ
                 || ft == FrameType.CLIENT_RESET || ft == FrameType.SERVER_RESYNC_REQ
-                || ft == FrameType.AUTH_OK;
+                || ft == FrameType.AUTH_OK || ft == FrameType.SERVER_FLUSH_END;
     }
 
     private void emitError(Exception e) {

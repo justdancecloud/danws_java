@@ -72,6 +72,7 @@ public class DanWebSocketClient {
     private final List<BiConsumer<String, Object>> onReceive = new ArrayList<>();
     private final List<Runnable> onReconnect = new ArrayList<>();
     private final List<Runnable> onReconnectFailed = new ArrayList<>();
+    private final List<Runnable> onUpdate = new ArrayList<>();
     private final List<Consumer<DanWSException>> onError = new ArrayList<>();
 
     public DanWebSocketClient(String url) {
@@ -184,6 +185,8 @@ public class DanWebSocketClient {
     public void onReceive(BiConsumer<String, Object> cb) { onReceive.add(cb); }
     public void onReconnect(Runnable cb) { onReconnect.add(cb); }
     public void onReconnectFailed(Runnable cb) { onReconnectFailed.add(cb); }
+    /** Called once per server flush batch — use for rendering. */
+    public void onUpdate(Runnable cb) { onUpdate.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
 
     // ──── Netty Client Handler ────
@@ -402,6 +405,9 @@ public class DanWebSocketClient {
                         }
                     }
                 }
+            }
+            case SERVER_FLUSH_END -> {
+                for (var cb : onUpdate) { try { cb.run(); } catch (Exception ignored) {} }
             }
             case SERVER_READY -> { /* acknowledged */ }
             case SERVER_RESET -> {

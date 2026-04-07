@@ -109,7 +109,12 @@ client.onReady(() -> {
 });
 
 client.onReceive((key, value) -> {
-    System.out.println(key + " = " + value);
+    System.out.println(key + " = " + value);  // fires per-frame (fine-grained)
+});
+
+// onUpdate fires once per server flush batch (~100ms) — ideal for UI rendering
+client.onUpdate(() -> {
+    System.out.println("Batch sync complete — safe to render");
 });
 
 client.connect();
@@ -631,7 +636,8 @@ Each topic gets its own isolated payload. No key collisions between topics.
 |-------|--------------|
 | `client.onConnect(cb)` | `Runnable` |
 | `client.onReady(cb)` | `Runnable` |
-| `client.onReceive(cb)` | `BiConsumer<String, Object>` -- global (non-topic keys) |
+| `client.onReceive(cb)` | `BiConsumer<String, Object>` -- per frame (fine-grained) |
+| `client.onUpdate(cb)` | `Runnable` -- per flush batch (use for rendering, fires once per ~100ms batch) |
 | `client.onDisconnect(cb)` | `Runnable` |
 | `client.onError(cb)` | `Consumer<DanWSException>` |
 

@@ -85,6 +85,9 @@ public class BulkQueue {
         queue.clear();
         valueDedupIndex.clear();
 
+        // Append SERVER_FLUSH_END as batch boundary signal
+        batch.add(Frame.signal(FrameType.SERVER_FLUSH_END));
+
         byte[] encoded = Codec.encodeBatch(batch);
         try {
             onFlush.accept(encoded);

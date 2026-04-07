@@ -19,7 +19,8 @@ public enum FrameType {
     AUTH_OK(0x0F),
     AUTH_FAIL(0x11),
     ARRAY_SHIFT_LEFT(0x20),
-    ARRAY_SHIFT_RIGHT(0x21);
+    ARRAY_SHIFT_RIGHT(0x21),
+    SERVER_FLUSH_END(0xFF);
 
     private final int code;
 
