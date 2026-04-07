@@ -147,6 +147,7 @@ public class PrincipalTX {
         if (flatKeys != null) {
             for (String path : flatKeys) clearLeaf(path);
             flattenedKeys.remove(key);
+            previousArrays.remove(key);
             triggerResync();
         } else {
             KeyEntry entry = registry.getByPath(key);
@@ -163,6 +164,7 @@ public class PrincipalTX {
             registry.clear();
             store.clear();
             flattenedKeys.clear();
+            previousArrays.clear();
             triggerResync();
         }
     }

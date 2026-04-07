@@ -6,7 +6,6 @@ import com.danws.state.KeyRegistry;
 import io.netty.channel.EventLoop;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -32,7 +31,7 @@ public class DanWebSocketSession {
 
     // Session-level flat TX store (backward compat)
     private final KeyRegistry sessionRegistry = new KeyRegistry();
-    private final Map<Integer, Object> sessionStore = new ConcurrentHashMap<>();
+    private final Map<Integer, Object> sessionStore = new HashMap<>();
     private int nextKeyId = 1; // global keyId counter — shared by flat session keys and all topic payloads
     private Consumer<Frame> sessionEnqueue;
     private boolean sessionBound;
@@ -175,11 +174,23 @@ public class DanWebSocketSession {
 
     public void clearKey(String key) {
         if (!sessionBound) return;
-        KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(key);
-        if (entry != null) {
-            sessionRegistry.remove(key);
-            sessionStore.remove(entry.keyId());
+        Set<String> flatKeys = flattenedKeys.get(key);
+        if (flatKeys != null) {
+            for (String path : flatKeys) {
+                KeyRegistry.KeyEntry e = sessionRegistry.getByPath(path);
+                if (e != null) { sessionRegistry.remove(path); sessionStore.remove(e.keyId()); }
+            }
+            flattenedKeys.remove(key);
+            previousArrays.remove(key);
             triggerSessionResync();
+        } else {
+            KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(key);
+            if (entry != null) {
+                sessionRegistry.remove(key);
+                sessionStore.remove(entry.keyId());
+                previousArrays.remove(key);
+                triggerSessionResync();
+            }
         }
     }
 
@@ -188,6 +199,8 @@ public class DanWebSocketSession {
         if (sessionRegistry.size() > 0) {
             sessionRegistry.clear();
             sessionStore.clear();
+            flattenedKeys.clear();
+            previousArrays.clear();
             triggerSessionResync();
         }
     }

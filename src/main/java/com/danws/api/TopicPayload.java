@@ -172,9 +172,11 @@ public class TopicPayload {
                 wirePathCache.remove(path);
             }
             flattenedKeys.remove(key);
+            previousArrays.remove(key);
             if (onResync != null) onResync.run();
         } else if (entries.remove(key) != null) {
             wirePathCache.remove(key);
+            previousArrays.remove(key);
             if (onResync != null) onResync.run();
         }
     }
@@ -184,6 +186,7 @@ public class TopicPayload {
             entries.clear();
             flattenedKeys.clear();
             wirePathCache.clear();
+            previousArrays.clear();
             if (onResync != null) onResync.run();
         }
     }

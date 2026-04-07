@@ -255,7 +255,7 @@ public class DanWebSocketServer {
                 if (!identified) {
                     if (frame.frameType() != FrameType.IDENTIFY) { ctx.close(); return; }
                     if (!(frame.payload() instanceof byte[] payload) || (payload.length != 16 && payload.length != 18)) { ctx.close(); return; }
-                    clientUuid = bytesToUuid(java.util.Arrays.copyOf(payload, 16));
+                    clientUuid = UuidUtil.bytesToUuid(java.util.Arrays.copyOf(payload, 16));
                     chToUuid.put(ctx.channel().id(), clientUuid);
                     identified = true;
                     handleIdentified(ctx.channel(), clientUuid);
@@ -572,14 +572,6 @@ public class DanWebSocketServer {
             throw new DanWSException("INVALID_MODE", "server." + method + "() is only available in " + expected + " mode.");
     }
 
-
-    private static String bytesToUuid(byte[] bytes) {
-        StringBuilder hex = new StringBuilder();
-        for (byte b : bytes) hex.append(String.format("%02x", b & 0xFF));
-        String h = hex.toString();
-        return h.substring(0, 8) + "-" + h.substring(8, 12) + "-" + h.substring(12, 16)
-                + "-" + h.substring(16, 20) + "-" + h.substring(20, 32);
-    }
 
     static class InternalSession {
         DanWebSocketSession session;

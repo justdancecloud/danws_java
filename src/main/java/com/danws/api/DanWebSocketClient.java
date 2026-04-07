@@ -17,6 +17,7 @@ import io.netty.handler.codec.http.websocketx.*;
 import com.danws.connection.ReconnectEngine;
 
 import java.net.URI;
+import java.util.concurrent.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
@@ -80,13 +81,22 @@ public class DanWebSocketClient {
 
     private final ReconnectEngine reconnectEngine = new ReconnectEngine();
 
+    // Heartbeat
+    private static final long HB_SEND_INTERVAL = 10_000;
+    private static final long HB_TIMEOUT = 15_000;
+    private static final ScheduledExecutorService HB_SCHEDULER =
+            Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "danws-client-hb"); t.setDaemon(true); return t; });
+    private volatile long lastHeartbeatReceived;
+    private ScheduledFuture<?> hbSendTask;
+    private ScheduledFuture<?> hbCheckTask;
+
     public DanWebSocketClient(String url) {
         this.uri = URI.create(url);
         this.id = generateUUIDv7();
 
         // Setup parser callbacks once (reuse)
         parser.onFrame(this::handleFrame);
-        parser.onHeartbeat(() -> sendRaw(Codec.encodeHeartbeat()));
+        parser.onHeartbeat(() -> lastHeartbeatReceived = System.currentTimeMillis());
         parser.onError(e -> {});
 
         // Reconnect wiring
@@ -153,6 +163,7 @@ public class DanWebSocketClient {
     public void disconnect() {
         intentionalDisconnect = true;
         reconnectEngine.stop();
+        stopHeartbeat();
         cleanup();
         state = State.DISCONNECTED;
         onDisconnect.forEach(Runnable::run);
@@ -262,8 +273,9 @@ public class DanWebSocketClient {
 
     private void handleOpen() {
         state = State.IDENTIFYING;
+        startHeartbeat();
         // Send 18-byte IDENTIFY: 16-byte UUID + 2-byte protocol version
-        byte[] uuid = uuidToBytes(id);
+        byte[] uuid = UuidUtil.uuidToBytes(id);
         byte[] payload = new byte[18];
         System.arraycopy(uuid, 0, payload, 0, 16);
         payload[16] = PROTOCOL_MAJOR;
@@ -273,6 +285,7 @@ public class DanWebSocketClient {
     }
 
     private void handleClose() {
+        stopHeartbeat();
         if (intentionalDisconnect) return;
         onDisconnect.forEach(Runnable::run);
 
@@ -511,6 +524,26 @@ public class DanWebSocketClient {
         }
     }
 
+    private void startHeartbeat() {
+        stopHeartbeat();
+        lastHeartbeatReceived = System.currentTimeMillis();
+        hbSendTask = HB_SCHEDULER.scheduleAtFixedRate(
+                () -> sendRaw(Codec.encodeHeartbeat()), HB_SEND_INTERVAL, HB_SEND_INTERVAL, TimeUnit.MILLISECONDS);
+        hbCheckTask = HB_SCHEDULER.scheduleAtFixedRate(() -> {
+            if (System.currentTimeMillis() - lastHeartbeatReceived > HB_TIMEOUT) {
+                stopHeartbeat();
+                for (var cb : onError) { try { cb.accept(new DanWSException("HEARTBEAT_TIMEOUT", "No heartbeat received")); } catch (Exception ignored) {} }
+                cleanup();
+                handleClose();
+            }
+        }, HB_TIMEOUT, 5000, TimeUnit.MILLISECONDS);
+    }
+
+    private void stopHeartbeat() {
+        if (hbSendTask != null) { hbSendTask.cancel(false); hbSendTask = null; }
+        if (hbCheckTask != null) { hbCheckTask.cancel(false); hbCheckTask = null; }
+    }
+
     private void cleanup() {
         if (channel != null) { try { channel.close(); } catch (Exception ignored) {} channel = null; }
     }
@@ -532,10 +565,4 @@ public class DanWebSocketClient {
                 + "-" + h.substring(16, 20) + "-" + h.substring(20, 32);
     }
 
-    private static byte[] uuidToBytes(String uuid) {
-        String hex = uuid.replace("-", "");
-        byte[] bytes = new byte[16];
-        for (int i = 0; i < 16; i++) bytes[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-        return bytes;
-    }
 }
