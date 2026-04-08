@@ -17,6 +17,7 @@ public class PrincipalTX {
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
     private List<Frame> cachedKeyFrames = null;
     private final Map<String, List<Object>> previousArrays = new HashMap<>();
+    private static final int FREED_POOL_CAP = 10_000;
     private final List<Integer> freedKeyIds = new ArrayList<>();
 
     @FunctionalInterface
@@ -97,7 +98,7 @@ public class PrincipalTX {
         if (entry != null) {
             registry.remove(path);
             store.remove(entry.keyId());
-            freedKeyIds.add(entry.keyId());
+            if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
             cachedKeyFrames = null;
             if (onValueSet != null) {
                 onValueSet.accept(Frame.keyDelete(entry.keyId()));
@@ -136,7 +137,7 @@ public class PrincipalTX {
             // Type changed — delete old + re-register with new type
             registry.remove(key);
             store.remove(existing.keyId());
-            freedKeyIds.add(existing.keyId());
+            if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(existing.keyId());
             cachedKeyFrames = null;
             if (onValueSet != null) {
                 onValueSet.accept(Frame.keyDelete(existing.keyId()));
@@ -194,7 +195,7 @@ public class PrincipalTX {
     public void clear() {
         if (registry.size() > 0) {
             for (KeyEntry entry : registry.entries()) {
-                freedKeyIds.add(entry.keyId());
+                if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
             }
             registry.clear();
             store.clear();

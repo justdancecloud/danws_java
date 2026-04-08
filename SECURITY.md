@@ -60,6 +60,18 @@ dan-websocket is **server-to-client only**. Clients cannot write arbitrary data 
 - **Key path validation** — max 200 bytes, restricted character set
 - **Flatten depth limit** — max 10 levels, circular reference detection
 
+## Transport Security
+
+dan-websocket does not provide transport-layer encryption on its own. In production environments, always use **`wss://`** (WebSocket over TLS) rather than plain `ws://`. This ensures that all data on the wire -- including auth tokens, state updates, and subscription parameters -- is encrypted in transit.
+
+**Recommendations:**
+
+- Terminate TLS at a reverse proxy (e.g., nginx, Caddy, or a cloud load balancer) and forward to your dan-websocket server over localhost.
+- If exposing the WebSocket server directly, configure Netty with an `SslContext` or place the server behind an HTTPS-enabled gateway.
+- Never transmit auth tokens over unencrypted `ws://` connections in production. The `AUTH` frame payload is sent as a plain string and is visible to any network observer without TLS.
+
+---
+
 ## Supported Versions
 
 | Version | Supported |

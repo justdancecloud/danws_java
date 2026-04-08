@@ -34,6 +34,7 @@ public class DanWebSocketSession {
     private final KeyRegistry sessionRegistry = new KeyRegistry();
     private final Map<Integer, Object> sessionStore = new HashMap<>();
     private int nextKeyId = 1; // global keyId counter — shared by flat session keys and all topic payloads
+    private static final int FREED_POOL_CAP = 10_000;
     private final List<Integer> freedKeyIds = new ArrayList<>();
     private Consumer<Frame> sessionEnqueue;
     private boolean sessionBound;
@@ -61,6 +62,16 @@ public class DanWebSocketSession {
     public void onReady(Runnable cb) { onReady.add(cb); }
     public void onDisconnect(Runnable cb) { onDisconnect.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
+
+    private void emitError(DanWSException err) {
+        if (onError.isEmpty()) {
+            // No error listeners — throw to avoid silent failure (like Node.js EventEmitter)
+            throw err;
+        }
+        for (var cb : onError) {
+            try { cb.accept(err); } catch (Exception e) { log("onError callback error", e); }
+        }
+    }
 
     public void disconnect() {
         connected = false;
@@ -112,7 +123,7 @@ public class DanWebSocketSession {
                         if (entry != null) {
                             sessionRegistry.remove(oldPath);
                             sessionStore.remove(entry.keyId());
-                            freedKeyIds.add(entry.keyId());
+                            if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
                             if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(entry.keyId()));
                         }
                     }
@@ -165,7 +176,7 @@ public class DanWebSocketSession {
         if (existing.type() != newType) {
             sessionRegistry.remove(key);
             sessionStore.remove(existing.keyId());
-            freedKeyIds.add(existing.keyId());
+            if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(existing.keyId());
             if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(existing.keyId()));
             int keyId = allocateKeyId();
             sessionRegistry.registerOne(keyId, key, newType);
@@ -205,7 +216,7 @@ public class DanWebSocketSession {
                 if (e != null) {
                     sessionRegistry.remove(path);
                     sessionStore.remove(e.keyId());
-                    freedKeyIds.add(e.keyId());
+                    if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(e.keyId());
                     if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(e.keyId()));
                 }
             }
@@ -216,7 +227,7 @@ public class DanWebSocketSession {
             if (entry != null) {
                 sessionRegistry.remove(key);
                 sessionStore.remove(entry.keyId());
-                freedKeyIds.add(entry.keyId());
+                if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
                 previousArrays.remove(key);
                 if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(entry.keyId()));
             }
@@ -227,7 +238,7 @@ public class DanWebSocketSession {
         if (!sessionBound) return;
         if (sessionRegistry.size() > 0) {
             for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
-                freedKeyIds.add(entry.keyId());
+                if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
             }
             sessionRegistry.clear();
             sessionStore.clear();
@@ -328,7 +339,7 @@ public class DanWebSocketSession {
             }
             case ERROR -> {
                 var err = new DanWSException("REMOTE_ERROR", String.valueOf(frame.payload()));
-                onError.forEach(cb -> cb.accept(err));
+                emitError(err);
             }
             default -> {}
         }
@@ -363,7 +374,7 @@ public class DanWebSocketSession {
 
     TopicHandle createTopicHandle(String name, Map<String, Object> params, int wireIndex) {
         if (wireIndex >= topicIndex) topicIndex = wireIndex + 1;
-        TopicPayload payload = new TopicPayload(wireIndex, this::allocateKeyId, id -> freedKeyIds.add(id), maxValueSize);
+        TopicPayload payload = new TopicPayload(wireIndex, this::allocateKeyId, id -> { if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(id); }, maxValueSize);
         if (sessionEnqueue != null) {
             payload.bind(sessionEnqueue, this::triggerSessionResync);
         }

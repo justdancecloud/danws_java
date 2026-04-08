@@ -245,6 +245,16 @@ public class DanWebSocketClient {
     public void onReconnectFailed(Runnable cb) { onReconnectFailed.add(cb); }
     public void onError(Consumer<DanWSException> cb) { onError.add(cb); }
 
+    private void emitError(DanWSException err) {
+        if (onError.isEmpty()) {
+            // No error listeners — throw to avoid silent failure (like Node.js EventEmitter)
+            throw err;
+        }
+        for (var cb : onError) {
+            try { cb.accept(err); } catch (Exception e) { log("onError callback error", e); }
+        }
+    }
+
     // ──── Netty Client Handler ────
 
     private class ClientHandler extends SimpleChannelInboundHandler<Object> {
@@ -332,7 +342,7 @@ public class DanWebSocketClient {
             case AUTH_FAIL -> {
                 intentionalDisconnect = true;
                 var err = new DanWSException("AUTH_REJECTED", String.valueOf(frame.payload()));
-                onError.forEach(cb -> cb.accept(err));
+                emitError(err);
                 cleanup();
                 state = State.DISCONNECTED;
                 onDisconnect.forEach(Runnable::run);
@@ -535,7 +545,7 @@ public class DanWebSocketClient {
             }
             case ERROR -> {
                 var err = new DanWSException("REMOTE_ERROR", String.valueOf(frame.payload()));
-                onError.forEach(cb -> cb.accept(err));
+                emitError(err);
             }
             default -> {}
         }
@@ -600,7 +610,7 @@ public class DanWebSocketClient {
         hbCheckTask = HB_SCHEDULER.scheduleAtFixedRate(() -> {
             if (System.currentTimeMillis() - lastHeartbeatReceived > HB_TIMEOUT) {
                 stopHeartbeat();
-                for (var cb : onError) { try { cb.accept(new DanWSException("HEARTBEAT_TIMEOUT", "No heartbeat received")); } catch (Exception e) { log("onError callback error", e); } }
+                emitError(new DanWSException("HEARTBEAT_TIMEOUT", "No heartbeat received"));
                 cleanup();
                 handleClose();
             }
