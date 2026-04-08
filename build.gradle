@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'io.github.justdancecloud'
-version = '2.3.1'
+version = '2.4.0'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -29,6 +29,7 @@ test {
     useJUnitPlatform()
     jvmArgs '-Xmx4g', '-Xms2g'
     exclude '**/StressTest.class', '**/TenKTest.class'
+    maxParallelForks = Runtime.runtime.availableProcessors()
     def tmpDir = System.getProperty('java.io.tmpdir') + '/danws-test-' + System.currentTimeMillis()
     reports.junitXml.outputLocation = file(tmpDir + '/xml')
     reports.html.outputLocation = file(tmpDir + '/html')

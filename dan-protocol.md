@@ -279,6 +279,9 @@ Types are auto-detected from application values. No explicit declaration needed.
 | `0x0A` | String | var | `string` / `String` |
 | `0x0B` | Binary | var | `Uint8Array` / `byte[]` |
 | `0x0C` | Timestamp | 8 | `Date` / `Date` |
+| `0x0D` | VarInteger | var | `number` / `Integer`, `Long` |
+| `0x0E` | VarDouble | var | `number` / `Double` |
+| `0x0F` | VarFloat | var | `number` / `Float` |
 
 ### Auto-Detection Rules
 
@@ -286,15 +289,88 @@ Types are auto-detected from application values. No explicit declaration needed.
 |-------|-----------|
 | `null` | Null |
 | `true` / `false` | Bool |
-| JS `number` / Java `Double` | Float64 |
-| Java `Integer` | Int32 |
-| Java `Float` | Float32 |
-| JS `bigint` >= 0 / Java `Long` >= 0 | Uint64 |
-| JS `bigint` < 0 / Java `Long` < 0 | Int64 |
+| Java `Integer`, `Long`, `Short`, `Byte` | VarInteger |
+| Java `Double`, `BigDecimal` | VarDouble |
+| Java `Float` | VarFloat |
 | `string` / `String` | String |
 | `Uint8Array` / `byte[]` | Binary |
 | `Date` | Timestamp |
 | `{ ... }` / `[...]` (object/array) | **Auto-flatten** (API layer, not a wire type) |
+
+### VarInteger (0x0D) — Compact Variable-Length Integer Encoding
+
+VarInteger encodes all integer types (Integer, Long, Short, Byte) using zigzag + unsigned VarInt.
+
+**Zigzag encoding:** Maps signed long to unsigned long: `(n << 1) ^ (n >> 63)`
+- 0 → 0, -1 → 1, 1 → 2, -2 → 3, 2 → 4, ...
+
+**Payload:** The zigzag-encoded value as unsigned VarInt (protobuf-style: 7 bits per byte, MSB = continuation).
+
+**Deserialization type mapping:**
+- Fits in int32 range → `Integer` (Java) / `number` (JS)
+- Exceeds int32 range → `Long` (Java) / `number` (JS)
+
+**Wire examples:**
+
+| Value | Bytes | Explanation |
+|-------|-------|-------------|
+| `0` | `00` | zigzag=0, VarInt=0 |
+| `1` | `02` | zigzag=2, VarInt=2 |
+| `-1` | `01` | zigzag=1, VarInt=1 |
+| `42` | `54` | zigzag=84, VarInt=84 (0x54) |
+| `-42` | `53` | zigzag=83, VarInt=83 (0x53) |
+
+### VarDouble (0x0E) — Compact Variable-Length Double Encoding
+
+VarDouble encodes Double values using scale + mantissa encoding with Float64 fallback.
+
+**First byte layout: `[FSSS SSSS]`**
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| F (bit 7) | Fallback flag | 1 = Float64 raw 8 bytes follow |
+| SSSSSSS (bits 0-6) | Sign + Scale | 0-63: positive, scale = value; 64-127: negative, scale = value - 64 |
+
+**When F=0 (normal encoding):**
+- First byte encodes sign and decimal scale
+- Followed by an unsigned VarInt mantissa (protobuf-style: 7 bits per byte, MSB = continuation)
+- Value = mantissa / 10^scale (negated if sign bit set)
+
+**When F=1 (byte = 0x80):**
+- Next 8 bytes = raw IEEE 754 Float64
+- Used for: NaN, Infinity, -Infinity, -0, scientific notation, scale > 63, mantissa overflow
+
+**Deserialization:** Always returns `Double` (Java) / `number` (JS).
+
+**Wire examples:**
+
+| Value | Bytes | Explanation |
+|-------|-------|-------------|
+| `42.0` | `00 2A` | scale=0, positive, mantissa=42 |
+| `-7.0` | `40 07` | scale=0, negative, mantissa=7 |
+| `3.14` | `02 BA 02` | scale=2, positive, mantissa=314 (VarInt: 0xBA 0x02) |
+| `0.0` | `00 00` | scale=0, positive, mantissa=0 |
+| `Math.PI` | `80 [8 bytes]` | fallback Float64 |
+
+### VarFloat (0x0F) — Compact Variable-Length Float Encoding
+
+VarFloat encodes Float values using the same scale + mantissa encoding as VarDouble, but with Float32 fallback instead of Float64.
+
+**First byte layout:** Same as VarDouble.
+
+**When F=1 (byte = 0x80):**
+- Next 4 bytes = raw IEEE 754 Float32 (instead of 8 bytes for VarDouble)
+- Used for: NaN, Infinity, -Infinity, -0, and values that cannot be represented compactly
+
+**Deserialization:** Returns `Float` (Java) / `number` (JS).
+
+### VarInt encoding (unsigned, protobuf-style)
+
+Used by VarInteger, VarDouble, and VarFloat:
+- 7 bits per byte, MSB = continuation bit
+- `0-127`: 1 byte `[0XXXXXXX]`
+- `128-16383`: 2 bytes `[1XXXXXXX] [0XXXXXXX]`
+- Up to 10 bytes for 64-bit values
 
 ---
 

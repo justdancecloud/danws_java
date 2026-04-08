@@ -5,80 +5,56 @@
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.justdancecloud/dan-websocket)](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket)
 [![npm](https://img.shields.io/npm/v/dan-websocket)](https://www.npmjs.com/package/dan-websocket)
 
-Java implementation of [DanProtocol v3.3](./dan-protocol.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
+Java implementation of [DanProtocol v3.4](./dan-protocol.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
 
 ---
 
-## What is this?
+## Why dan-websocket?
 
-**dan-websocket** pushes state from your server to connected clients in real time using a compact binary protocol. You call `set(key, value)` on the server and every connected client receives the update instantly -- no serialization boilerplate, no JSON parsing, no manual diffing.
+Building real-time features with raw WebSocket or libraries like Socket.IO means writing serialization, diffing, reconnection, and batching from scratch. dan-websocket does all of that for you with a single method call.
 
-The library handles:
+You call `set(key, value)` on the server. Every connected client receives the update instantly as a compact binary frame. No JSON parsing, no manual diffing, no serialization boilerplate.
 
-- **Auto type detection** -- Booleans, integers, doubles, strings, byte arrays, timestamps, BigDecimal, BigInteger, Short, and Byte are all detected and serialized automatically.
-- **Auto-flatten** -- Pass a Map or List and it expands into dot-path binary keys. Only changed leaf values are transmitted.
-- **Array shift optimization (NEW in v2.0)** -- Sliding-window arrays (chart data, logs) transmit 2 frames instead of N.
-- **Reconnection and heartbeat** -- Built in. Clients recover state transparently.
-- **Principal-based multi-device sync** -- One user, many devices, one state.
-- **Topic-scoped data** -- Subscribe/unsubscribe to data channels with parameters and periodic polling.
+| | JSON WebSocket | Socket.IO | **dan-websocket** |
+|---|---|---|---|
+| A boolean update | `{"key":"alive","value":true}` = 30+ bytes | Similar + event overhead | **9 bytes** |
+| Number encoding | Always string or 8 bytes | Same | **VarNumber: 1-5 bytes** (50-75% smaller) |
+| Type safety | Parse then cast | Parse then cast | **Auto-typed on the wire** |
+| Reconnection | Build it yourself | Built-in (JSON re-sync) | **Built-in with binary state recovery** |
+| Multi-device sync | DIY per-connection | DIY per-connection | **Principal-based (1 state -> N sessions)** |
+| Array of 100 elements, shift+push | 100 value updates | 100 value updates | **2 frames (shift + new value)** |
+| Nested object change | Re-serialize entire object | Re-emit entire object | **Only changed leaf values sent** |
+| Batching | None | None | **100ms auto-batch with dedup** |
 
----
-
-## Why not just JSON over WebSocket?
-
-| | JSON WebSocket | dan-websocket |
-|---|---|---|
-| A boolean update | `{"key":"alive","value":true}` = 30+ bytes | 9 bytes |
-| Type safety | Parse then cast | Auto-typed on the wire |
-| Reconnection | Build it yourself | Built-in with heartbeat |
-| Multi-device sync | DIY per-connection | Principal-based (1 state -> N sessions) |
-| Array of 100 elements, shift+push | 100 value updates | 2 frames (shift + new value) |
-| Nested object change | Re-serialize entire object | Only changed leaf values sent |
+**Core idea: objects in, objects out, binary in between.** Only changed fields are sent -- up to 99% less traffic than re-sending full JSON.
 
 ---
 
-## Install
+## Quick Start
 
-### Gradle
-
-```groovy
-dependencies {
-    implementation 'io.github.justdancecloud:dan-websocket:2.2.0'
-}
-```
-
-### Maven
-
-```xml
-<dependency>
-    <groupId>io.github.justdancecloud</groupId>
-    <artifactId>dan-websocket</artifactId>
-    <version>2.1.7</version>
-</dependency>
-```
-
-Requires **Java 17+**.
-
-### Quick Start
+**Server** -- 5 lines to push real-time data:
 
 ```java
-// Server — just set objects. That's it.
-var server = new DanWebSocketServer(8080, DanWebSocketServer.Mode.BROADCAST);
+import com.danws.api.DanWebSocketServer;
+import static com.danws.api.DanWebSocketServer.Mode;
+
+var server = new DanWebSocketServer(8080, Mode.BROADCAST);
 
 server.set("price", Map.of("btc", 67000, "eth", 3200));
-// Internally: "price" is split into price.btc (Float64, 8 bytes) and price.eth (Float64, 8 bytes).
-// Each client receives only these two binary frames — not a JSON blob.
+// Internally flattened to: price.btc (VarInteger, 3 bytes) and price.eth (VarInteger, 2 bytes)
+// Every connected client receives these two binary frames -- not a JSON blob.
 ```
 
+**Client** -- 5 lines to receive real-time data:
+
 ```java
-// Client — just read values. No parsing, no schema, no boilerplate.
+import com.danws.api.DanWebSocketClient;
+
 var client = new DanWebSocketClient("ws://localhost:8080");
 
 client.onUpdate(() -> {
     System.out.println(client.get("price.btc"));  // 67000
     System.out.println(client.get("price.eth"));   // 3200
-    // This callback fires once per server flush (~100ms batch),
-    // not once per field. Safe for rendering — no render storms.
 });
 
 client.connect();
@@ -88,21 +64,45 @@ Now update just one field:
 
 ```java
 server.set("price", Map.of("btc", 67100, "eth", 3200));
-// Only price.btc changed → only 1 frame (8 bytes) goes over the wire.
-// price.eth is identical → not sent. Zero waste.
+// Only price.btc changed -> only 1 frame goes over the wire.
+// price.eth is identical -> not sent. Zero waste.
 ```
 
 **What just happened?**
 - Server: you wrote a plain Java Map.
-- Wire: only the changed leaf field (`btc`) traveled as a binary-encoded 8-byte Float64.
+- Wire: only the changed leaf field (`btc`) traveled as a binary-encoded VarInteger.
 - Client: you read it back with `client.get("price.btc")`.
 - No JSON serialization. No manual diffing. No field-by-field subscriptions.
 
-This is the core idea: **objects in, objects out, binary in between**. Only changed fields are sent — up to **99% less traffic** than re-sending full JSON. Drop in the library, cut your network costs.
+---
+
+## Installation
+
+Requires **Java 17+**.
+
+### Gradle
+
+```groovy
+dependencies {
+    implementation 'io.github.justdancecloud:dan-websocket:2.4.0'
+}
+```
+
+### Maven
+
+```xml
+<dependency>
+    <groupId>io.github.justdancecloud</groupId>
+    <artifactId>dan-websocket</artifactId>
+    <version>2.4.0</version>
+</dependency>
+```
 
 ---
 
 ## Modes
+
+dan-websocket supports 4 modes that cover every common real-time use case:
 
 | Mode | Auth | Data scope | Use case |
 |------|:---:|-----------|----------|
@@ -117,7 +117,7 @@ This is the core idea: **objects in, objects out, binary in between**. Only chan
 
 The simplest mode. The server holds one global state. Every connected client gets the same data. No auth required.
 
-**When to use:** Live dashboards, crypto tickers, server monitoring -- anything where all users see the same thing.
+**Use cases:** Live dashboards, crypto tickers, server monitoring, sports scores -- anything where all users see the same thing.
 
 **Server:**
 
@@ -141,7 +141,7 @@ timer.scheduleAtFixedRate(new TimerTask() {
             "btc", Map.of("price", 67000 + Math.random() * 100, "volume", 1200.0),
             "eth", Map.of("price", 3200 + Math.random() * 10, "volume", 800.0)
         ));
-        // If only btc.price changed → 1 frame (8 bytes). eth stays the same → 0 bytes.
+        // If only btc.price changed -> 1 frame. eth stays the same -> 0 bytes.
     }
 }, 0, 1000);
 ```
@@ -169,10 +169,10 @@ client.onReceive((key, value) -> {
 client.connect();
 ```
 
-**What's on the wire:**
-1. First connect → server sends key registrations + all current values (full sync)
-2. After that → only changed leaf fields as binary frames
-3. Client disconnects and reconnects → full sync again (automatic)
+**What happens on the wire:**
+1. First connect -> server sends key registrations + all current values (full sync)
+2. After that -> only changed leaf fields as binary frames
+3. Client disconnects and reconnects -> full sync again (automatic)
 
 ---
 
@@ -180,10 +180,10 @@ client.connect();
 
 Per-user state. Each user is identified by a "principal" name (e.g., username). If one user has multiple devices (PC + mobile), all devices share the same state and stay in sync automatically.
 
-**When to use:** Online games (per-player state), user dashboards, portfolio trackers -- anything where each user has their own data.
+**Use cases:** Online games (per-player state), user dashboards, portfolio trackers -- anything where each user has their own data.
 
 **Auth flow:**
-1. Client connects → server fires `onAuthorize` with the client's UUID and token
+1. Client connects -> server fires `onAuthorize` with the client's UUID and token
 2. Your code validates the token (JWT, session lookup, etc.)
 3. You call `server.authorize(uuid, token, principalName)` to bind the client to a principal
 4. All clients with the same principal share the same state
@@ -216,8 +216,8 @@ server.principal("alice").set("profile", Map.of(
 // Later: alice scores a point
 server.principal("alice").set("profile", Map.of(
     "name", "Alice",
-    "score", 101,  // only this 8-byte Float64 goes to alice's PC + mobile
-    "inventory", List.of("sword", "shield", "potion")  // unchanged → not sent
+    "score", 101,  // only this changed value goes to alice's PC + mobile
+    "inventory", List.of("sword", "shield", "potion")  // unchanged -> not sent
 ));
 
 // Each principal is independent -- bob's data is separate
@@ -261,20 +261,22 @@ client.connect();
 
 **Multi-device sync:** If Alice opens the app on her phone while already connected on PC, both devices see the same data. When the server updates Alice's principal, both devices get the update instantly.
 
+**PrincipalTX auto-eviction (new in v2.4.0):** When all sessions for a principal disconnect, the server schedules automatic eviction of that principal's data after a configurable TTL (default: 5 minutes). If the user reconnects before the TTL expires, eviction is cancelled. This prevents memory leaks for long-running servers with many transient users. See the [Configuration](#configuration) section for details.
+
 ---
 
 ### 3. Session Topic
 
 Topic-based subscriptions without auth. Each client subscribes to "topics" with optional parameters, and the server provides data per-topic per-session. Different clients can subscribe to different topics or the same topic with different params.
 
-**When to use:** Public data feeds where each client picks what to watch -- stock charts (different symbols), paginated boards, real-time search results.
+**Use cases:** Public data feeds where each client picks what to watch -- stock charts (different symbols), paginated boards, real-time search results.
 
 **Topic lifecycle:**
 1. Client calls `client.subscribe("topic.name", params)`
-2. Server's `topic().onSubscribe` fires → you register a callback
+2. Server's `topic().onSubscribe` fires -> you register a callback
 3. Callback runs immediately (`SUBSCRIBE`) and on every `setDelayedTask` tick (`DELAYED_TASK`)
-4. Client calls `client.setParams(...)` → callback re-fires with `CHANGED_PARAMS`
-5. Client calls `client.unsubscribe(...)` → server's `topic().onUnsubscribe` fires, timers stop
+4. Client calls `client.setParams(...)` -> callback re-fires with `CHANGED_PARAMS`
+5. Client calls `client.unsubscribe(...)` -> server's `topic().onUnsubscribe` fires, timers stop
 
 **Server:**
 
@@ -289,19 +291,19 @@ server.topic().onSubscribe((session, topic) -> {
     if ("stock.chart".equals(topic.name())) {
         topic.setCallback((event, t, s) -> {
             // event tells you WHY this callback fired:
-            //   SUBSCRIBE       → client just subscribed (first call)
-            //   CHANGED_PARAMS  → client changed params (e.g., different symbol)
-            //   DELAYED_TASK    → timer tick (periodic refresh)
+            //   SUBSCRIBE       -> client just subscribed (first call)
+            //   CHANGED_PARAMS  -> client changed params (e.g., different symbol)
+            //   DELAYED_TASK    -> timer tick (periodic refresh)
 
             if (event == EventType.CHANGED_PARAMS) {
-                t.payload().clear();  // params changed → clear old data
+                t.payload().clear();  // params changed -> clear old data
             }
 
             // t.params() contains the client's subscription parameters
             String symbol = (String) t.params().get("symbol");    // "AAPL"
 
             List<Map<String, Object>> candles = fetchCandles(symbol);
-            t.payload().set("candles", candles);  // array → auto-flattened, shift-detected
+            t.payload().set("candles", candles);  // array -> auto-flattened, shift-detected
             t.payload().set("meta", Map.of(
                 "symbol", symbol,
                 "lastUpdate", new Date(),
@@ -322,7 +324,7 @@ server.topic().onSubscribe((session, topic) -> {
             var data = db.getPosts(page, size);
 
             t.payload().set("result", Map.of(
-                "items", data.items(),         // array of maps → each field auto-flattened
+                "items", data.items(),         // array of maps -> each field auto-flattened
                 "totalCount", data.total(),
                 "page", page
             ));
@@ -367,10 +369,10 @@ client.topic("stock.chart").onReceive((key, value) -> {
     // Called for every individual field change within this topic
 });
 
-// Change params → server callback re-fires with CHANGED_PARAMS
+// Change params -> server callback re-fires with CHANGED_PARAMS
 client.setParams("board.posts", Map.of("page", 2.0, "size", 20.0));
 
-// Switch symbol → server clears old data, fetches new
+// Switch symbol -> server clears old data, fetches new
 client.setParams("stock.chart", Map.of("symbol", "GOOG", "interval", "1m"));
 
 // Unsubscribe when done
@@ -391,7 +393,7 @@ client.connect();
 
 Combines topics with auth. The session knows who the user is (`session.principal()`), so the server can provide personalized data per-topic.
 
-**When to use:** Authenticated apps where each user sees different data based on their identity -- personal dashboards, per-user notifications, role-based data feeds.
+**Use cases:** Authenticated apps where each user sees different data based on their identity -- personal dashboards, per-user notifications, role-based data feeds.
 
 **Server:**
 
@@ -487,14 +489,6 @@ client.connect();
 
 ---
 
-## Architecture: CQRS-Friendly Real-Time State
-
-dan-websocket naturally enables a **CQRS (Command Query Responsibility Segregation)** pattern. Writes (commands) flow through your existing REST/gRPC API, while reads (queries) are delivered as real-time state via WebSocket. The server calls `set()` whenever state changes -- whether triggered by an API request, a database event, or a background job -- and every connected client receives the update instantly.
-
-This means your clients never poll for data. They submit actions through your API, and the results appear automatically through the WebSocket channel. Your API handles validation and business logic; dan-websocket handles the read side by pushing the resulting state to all relevant clients with field-level efficiency.
-
----
-
 ## Auto-Flatten
 
 Objects and arrays are automatically expanded into dot-path binary keys. Only changed leaf values are transmitted on the wire.
@@ -504,7 +498,7 @@ Objects and arrays are automatically expanded into dot-path binary keys. Only ch
 ```java
 // Objects -> dot-path keys
 server.set("user", Map.of("name", "Alice", "age", 30));
-// Wire: user.name = "Alice", user.age = 30
+// Wire: user.name = "Alice" (String), user.age = 30 (VarInteger, 1 byte)
 
 // Arrays -> indexed keys + .length
 server.set("scores", List.of(10.0, 20.0, 30.0));
@@ -528,18 +522,19 @@ server.set("data", Map.of(
 - Nested objects flatten recursively (max depth: 10)
 - Circular references are detected and rejected
 - When an array shrinks, stale index keys are left in place -- the client uses `.length` as the source of truth
-- **Unchanged leaf values are NOT re-transmitted** (field-level dedup)
+- **Unchanged leaf values are NOT re-transmitted** (field-level dedup via FlatStateHelper)
+- Stale keys from previous flattens are automatically cleaned up via ServerKeyDelete
 
 ---
 
-## Array Sync Optimization (NEW in v2.0)
+## Array Shift Optimization
 
 ### The Problem
 
 Imagine a real-time stock chart with 100 data points displayed as a sliding window. Every second, you push a new price and shift the oldest one out:
 
 ```java
-// Before v2.0: this sends 101 value frames every update!
+// Without shift detection: this sends 101 value frames every update!
 // scores.0=old[1], scores.1=old[2], ..., scores.99=newPrice, scores.length=100
 List<Double> chartData = getLatest100Prices();
 server.set("chart", chartData);
@@ -549,7 +544,7 @@ Even though only 1 value actually changed (the new tail element), every index sh
 
 ### The Solution: ARRAY_SHIFT_LEFT / ARRAY_SHIFT_RIGHT
 
-v2.0 introduces two new protocol frames that tell the client to shift its local array in-place:
+Two protocol frames tell the client to shift its local array in-place:
 
 - **ARRAY_SHIFT_LEFT** -- "Remove k elements from the front, shift everything left"
 - **ARRAY_SHIFT_RIGHT** -- "Shift everything right by k positions, making room at the front"
@@ -570,10 +565,9 @@ server.set("chart", prices);
 
 ### Practical Examples
 
-**Stock/crypto chart -- sliding window (shift + push):**
+**Sliding window (shift + push):**
 
 ```java
-// Every second, new price arrives
 List<Double> prices = new ArrayList<>(recentPrices); // [10.1, 10.2, ..., 10.5]
 prices.remove(0);          // shift oldest
 prices.add(latestPrice);   // push newest
@@ -582,10 +576,9 @@ server.set("chart", prices);
 // Frames: ARRAY_SHIFT_LEFT(1) + chart.99 = latestPrice = 2 frames
 ```
 
-**Historical data loading -- prepend (right shift):**
+**Prepend (right shift):**
 
 ```java
-// User scrolls up to load older messages
 List<Message> messages = new ArrayList<>();
 messages.addAll(olderMessages);     // prepend 5 older messages
 messages.addAll(currentMessages);
@@ -600,25 +593,23 @@ server.set("messages", messages);
 List<String> logs = new ArrayList<>(currentLogs);
 logs.add("New log entry");
 server.set("logs", logs);
-// Auto-detected as left shift by 0? No -- this is a simple append
 // The auto-flatten dedup handles it: only logs.{N} and logs.length are new
 ```
 
-### Frame Count Comparison (Verified by automated tests)
+### Frame Count Comparison
 
-| Scenario | Array Size | Before v2.0 | After v2.0 | Reduction |
+| Scenario | Array Size | Without shift | With shift | Reduction |
 |----------|-----------|-------------|------------|-----------|
 | Shift+push (sliding window) | 100 | ~100 frames | **2 frames** | **98%** |
 | Shift by 10 + push 10 | 100 | ~100 frames | **10 frames** | **90%** |
 | Prepend (right shift) | 50 | ~50 frames | **3 frames** | **94%** |
 | Append 1 element | 10 | 2 frames | **2 frames** | Same (already optimal) |
-| Pop (shrink from end) | 10→7 | full resync | **1 frame** | **99%+** |
+| Pop (shrink from end) | 10->7 | full resync | **1 frame** | **99%+** |
 | Unchanged (same data) | 100 | ~100 frames | **0 frames** | **100%** |
-| 10× repeated shift+push | 50 | ~500 total | **20 total** (2 each) | **96%** |
 
-> These numbers are from actual E2E tests: server sets the array, client counts `onReceive` callbacks. See `FrameCountTest.java` for the full benchmark.
+> These numbers are from actual E2E tests. See `FrameCountTest.java`.
 
-### ArraySync -- Ring Buffer API for Explicit Control
+### ArraySync -- Ring Buffer API
 
 For maximum efficiency in sliding-window scenarios, use `ArraySync` which uses a ring buffer internally. Every operation sends a fixed number of frames regardless of array size:
 
@@ -631,7 +622,6 @@ ArraySync chart = server.principal("alice").array("chart", 100);
 // Push values -- 2 frames each
 chart.push(10.5);
 chart.push(11.2);
-chart.push(9.8);
 
 // Push + shift (sliding window) -- 2 frames, always
 chart.pushShift(12.0);   // removes oldest, adds newest
@@ -639,34 +629,22 @@ chart.pushShift(12.0);   // removes oldest, adds newest
 // Update specific index -- 1 frame
 chart.set(0, 99.9);
 
+// Bulk push
+chart.pushAll(List.of(1.0, 2.0, 3.0));
+
 // Read back
 chart.get(0);        // 99.9
 chart.length();      // current count
 chart.capacity();    // 100
 chart.toList();      // ordered list
 
-// Bulk push
-chart.pushAll(List.of(1.0, 2.0, 3.0));
-
 // Clear -- 2 frames
 chart.clear();
 ```
 
-**Wire keys for ring buffer:**
-
-| Key | Purpose |
-|-----|---------|
-| `{prefix}.__h` | Head index (ring buffer offset) |
-| `{prefix}.__l` | Current length |
-| `{prefix}.__c` | Capacity |
-| `{prefix}.__0`, `.__1`, ... | Ring buffer slots |
-
 ### ArrayView -- Client-Side Reading
 
-On the client side, use `ArrayView` to read ring-buffer arrays as ordered lists:
-
 ```java
-// Client-side
 ArrayView chart = client.array("chart");
 
 chart.length();    // current count
@@ -678,7 +656,103 @@ chart.toList();    // reconstructed ordered list
 
 ---
 
-## Topic API -- `setCallback` + `setDelayedTask` Pattern
+## VarNumber Encoding
+
+New in v2.3.0, dan-websocket automatically uses compressed number encoding for all numeric types. Small numbers that appear frequently in real-world applications (counts, IDs, flags, coordinates) use significantly fewer bytes on the wire.
+
+### How It Works
+
+**VarInteger** -- Variable-length integer encoding with ZigZag for signed values:
+
+| Value range | Bytes on wire | vs. fixed Int32 (4 bytes) |
+|-------------|:---:|:---:|
+| -64 to 63 | **1 byte** | 75% smaller |
+| -8,192 to 8,191 | **2 bytes** | 50% smaller |
+| -1,048,576 to 1,048,575 | **3 bytes** | 25% smaller |
+| Larger values | 4-9 bytes | Same or slightly larger |
+
+**VarDouble** -- Mantissa + exponent encoding for doubles:
+
+| Value | Bytes on wire | vs. fixed Float64 (8 bytes) |
+|-------|:---:|:---:|
+| `3200.0` | **3 bytes** (mantissa=32, exp=-1) | 63% smaller |
+| `0.5` | **2 bytes** | 75% smaller |
+| `100.0` | **2 bytes** | 75% smaller |
+| Complex decimals | 5-9 bytes | Same or slightly larger |
+
+**VarFloat** -- Same approach for 32-bit floats with proportional savings.
+
+### Automatic -- No Code Changes
+
+VarNumber encoding is applied automatically for all numeric types. Integer, Long, Short, Byte, BigInteger all map to VarInteger. Double, BigDecimal map to VarDouble. Float maps to VarFloat. You just call `set()` as before:
+
+```java
+server.set("player", Map.of(
+    "score", 42,          // VarInteger: 1 byte (was 4 bytes with Int32)
+    "level", 7,           // VarInteger: 1 byte
+    "health", 100.0,      // VarDouble:  2 bytes (was 8 bytes with Float64)
+    "x", 1234.5,          // VarDouble:  3 bytes (was 8 bytes)
+    "name", "Alice"       // String: unchanged
+));
+// Total numeric payload: ~7 bytes instead of ~24 bytes = 71% reduction
+```
+
+### Wire Type Mapping
+
+| Java Type | Wire Type | Encoding |
+|-----------|-----------|----------|
+| `Integer`, `Long`, `Short`, `Byte` | `VAR_INTEGER` (0x0D) | ZigZag + variable-length |
+| `Double`, `BigDecimal` | `VAR_DOUBLE` (0x0E) | Mantissa + exponent, variable-length |
+| `Float` | `VAR_FLOAT` (0x0F) | Mantissa + exponent, variable-length |
+
+Previous fixed-width types (Int32, Int64, Float32, Float64) are still supported for decoding -- the protocol is backward-compatible. New servers write VarNumber; old and new clients read both formats.
+
+---
+
+## CQRS Architecture
+
+dan-websocket naturally enables a **CQRS (Command Query Responsibility Segregation)** pattern. Writes (commands) flow through your existing REST/gRPC API, while reads (queries) are delivered as real-time state via WebSocket.
+
+```
+                        +-----------+
+   REST/gRPC  --------> | Your API  |  (Commands: create, update, delete)
+                        +-----+-----+
+                              |
+                              | server.set() / principal.set()
+                              v
+                      +---------------+
+                      | dan-websocket |  (Read-side: push state to clients)
+                      +-------+-------+
+                              |
+                     Binary WebSocket frames
+                              |
+              +---------------+---------------+
+              v               v               v
+           Client A        Client B        Client C
+```
+
+The server calls `set()` whenever state changes -- whether triggered by an API request, a database event, or a background job -- and every connected client receives the update instantly.
+
+**Example: REST API + real-time updates:**
+
+```java
+// Your REST controller
+@PostMapping("/api/orders/{id}/status")
+public void updateOrderStatus(@PathVariable String id, @RequestBody String newStatus) {
+    orderService.updateStatus(id, newStatus);  // write to database
+
+    // Push the update to the user watching this order
+    String userId = orderService.getOrderOwner(id);
+    danServer.principal(userId).set("orders", orderService.getOrders(userId));
+    // All of userId's connected devices see the change instantly
+}
+```
+
+Your clients never poll for data. They submit actions through your API, and the results appear automatically through the WebSocket channel.
+
+---
+
+## Topic API
 
 The topic API uses a single callback pattern with `EventType`:
 
@@ -693,6 +767,7 @@ server.topic().onSubscribe((session, topic) -> {
             }
             case CHANGED_PARAMS -> {
                 // Client changed params (e.g., page change)
+                t.payload().clear();
                 t.payload().set("items", db.getItems(t.params()));
             }
             case DELAYED_TASK -> {
@@ -733,37 +808,108 @@ Each topic gets its own isolated payload. No key collisions between topics.
 
 ---
 
-## API Reference
+## Configuration
 
-### Server -- Broadcast Mode
+### Server Constructor Variants
+
+```java
+// Simple -- defaults to path="/", ttl=600s, flushInterval=100ms
+new DanWebSocketServer(8080, Mode.BROADCAST);
+
+// Default mode (PRINCIPAL)
+new DanWebSocketServer(8080);
+
+// Custom path and TTL
+new DanWebSocketServer(8080, "/ws", Mode.PRINCIPAL, 300_000);
+
+// Custom flush interval (ms)
+new DanWebSocketServer(8080, "/ws", Mode.BROADCAST, 600_000, 50);
+
+// With size limits
+new DanWebSocketServer(8080, "/ws", Mode.BROADCAST, 600_000, 100,
+    1_048_576,  // maxMessageSize: 1MB (default)
+    65_536      // maxValueSize: 64KB (default)
+);
+
+// Full options: port, path, mode, ttl, flushInterval, maxMessageSize, maxValueSize, principalEvictionTtl
+new DanWebSocketServer(8080, "/ws", Mode.PRINCIPAL, 600_000, 100,
+    1_048_576,  // maxMessageSize: 1MB
+    65_536,     // maxValueSize: 64KB
+    300_000     // principalEvictionTtl: 5 minutes (default)
+);
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `port` | -- | WebSocket listen port |
+| `path` | `"/"` | WebSocket endpoint path |
+| `mode` | `PRINCIPAL` | One of the 4 modes |
+| `ttlMs` | `600000` (10 min) | Session time-to-live after disconnect |
+| `flushIntervalMs` | `100` | Bulk queue flush interval in ms |
+| `maxMessageSize` | `1048576` (1MB) | Max incoming WebSocket message size in bytes |
+| `maxValueSize` | `65536` (64KB) | Max single serialized value size. Throws `VALUE_TOO_LARGE` if exceeded |
+| `principalEvictionTtl` | `300000` (5 min) | Time after last session disconnects before principal data is evicted from memory. Set to `0` to disable. |
+
+### Authorization
+
+```java
+server.enableAuthorization(true);                // default timeout 5s
+server.enableAuthorization(true, 10_000);        // custom timeout 10s
+```
+
+### Debug Logging
+
+By default, all callback errors are silently caught. Enable debug logging to see them:
+
+```java
+// Simple -- prints to stderr
+server.setDebug(true);
+
+// Custom logger
+server.setDebug((msg, err) -> {
+    logger.warn("[DanWS] " + msg, err);
+});
+
+// Client too
+client.setDebug(true);
+```
+
+Debug propagates automatically: Server -> Session -> TopicHandle, Client -> TopicClientHandle.
+
+---
+
+## Server API Reference
+
+### Broadcast Mode
 
 | Method | Description |
 |--------|-------------|
-| `server.set(key, value)` | Set value, auto-detect type, sync to all clients |
+| `server.set(key, value)` | Set value, auto-detect type, sync to all clients. Accepts Map, List, or any leaf type. |
 | `server.get(key)` | Read current value (`null` if not set) |
 | `server.keys()` | All registered key paths |
-| `server.clear(key)` | Remove one key |
+| `server.clear(key)` | Remove one key (sends incremental ServerKeyDelete) |
 | `server.clear()` | Remove all keys |
 | `server.array(key, capacity)` | Create ring-buffer `ArraySync` |
+| `server.close()` | Shut down the server and release Netty resources |
 
-### Server -- Principal Mode
+### Principal Mode
 
 | Method | Description |
 |--------|-------------|
 | `server.principal(name)` | Get `PrincipalTX` for named principal |
-| `principal.set(key, value)` | Set value for this principal |
+| `principal.set(key, value)` | Set value for this principal (syncs to all of this user's sessions) |
 | `principal.get(key)` | Read current value |
 | `principal.keys()` | List all keys |
-| `principal.clear(key)` | Remove one key |
+| `principal.clear(key)` | Remove one key (incremental delete) |
 | `principal.clear()` | Remove all keys |
 | `principal.array(key, capacity)` | Create ring-buffer `ArraySync` |
 
-### Server -- Topic Modes
+### Topic Modes
 
 | Method | Description |
 |--------|-------------|
-| `server.topic().onSubscribe(cb)` | `BiConsumer<DanWebSocketSession, TopicHandle>` |
-| `server.topic().onUnsubscribe(cb)` | `BiConsumer<DanWebSocketSession, TopicHandle>` |
+| `server.topic().onSubscribe(cb)` | `BiConsumer<DanWebSocketSession, TopicHandle>` -- called when a client subscribes |
+| `server.topic().onUnsubscribe(cb)` | `BiConsumer<DanWebSocketSession, TopicHandle>` -- called when a client unsubscribes |
 
 ### TopicHandle (received in callbacks)
 
@@ -771,7 +917,7 @@ Each topic gets its own isolated payload. No key collisions between topics.
 |--------|-------------|
 | `topic.name()` | Topic name string |
 | `topic.params()` | Client-provided params `Map<String, Object>` |
-| `topic.payload()` | `TopicPayload` -- scoped data store |
+| `topic.payload()` | `TopicPayload` -- scoped data store for this topic |
 | `topic.setCallback(fn)` | Set callback for all events (fires SUBSCRIBE immediately) |
 | `topic.setDelayedTask(ms)` | Start periodic polling timer |
 | `topic.clearDelayedTask()` | Stop timer |
@@ -790,12 +936,13 @@ Each topic gets its own isolated payload. No key collisions between topics.
 
 | Method | Description |
 |--------|-------------|
-| `session.set(key, value)` | Push data to this session |
+| `session.set(key, value)` | Push data to this session only |
 | `session.get(key)` | Read current value |
 | `session.keys()` | List keys |
 | `session.clearKey(key)` | Remove one key |
 | `session.clearKey()` | Remove all keys |
-| `session.principal()` | Principal name (`SESSION_PRINCIPAL_TOPIC` only) |
+| `session.principal()` | Principal name (`SESSION_PRINCIPAL_TOPIC` mode only) |
+| `session.id()` | Session UUID |
 
 ### ArraySync (Server-side ring buffer)
 
@@ -812,27 +959,31 @@ Each topic gets its own isolated payload. No key collisions between topics.
 | `array.pushAll(list)` | Push multiple values |
 | `array.clear()` | Clear all elements (2 frames) |
 
-### Client
+---
+
+## Client API Reference
+
+### Connection and Data
 
 | Method | Description |
 |--------|-------------|
 | `client.connect()` | Connect to server |
 | `client.disconnect()` | Disconnect |
-| `client.authorize(token)` | Send auth token |
+| `client.authorize(token)` | Send auth token (required for PRINCIPAL and SESSION_PRINCIPAL_TOPIC modes) |
 | `client.get(key)` | Current value (`null` if not received) |
 | `client.keys()` | All received key paths |
 | `client.id()` | This client's UUIDv7 |
 | `client.state()` | Connection state enum |
 | `client.array(key)` | Get `ArrayView` for ring-buffer array |
 
-### Client -- Topic Methods
+### Topic Methods
 
 | Method | Description |
 |--------|-------------|
 | `client.subscribe(name, params)` | Subscribe with params |
 | `client.subscribe(name)` | Subscribe without params |
 | `client.unsubscribe(name)` | Unsubscribe |
-| `client.setParams(name, params)` | Update params (triggers CHANGED_PARAMS) |
+| `client.setParams(name, params)` | Update params (triggers CHANGED_PARAMS on server) |
 | `client.topics()` | List subscribed topic names |
 | `client.topic(name)` | Get `TopicClientHandle` for scoped access |
 
@@ -840,10 +991,10 @@ Each topic gets its own isolated payload. No key collisions between topics.
 
 | Method | Description |
 |--------|-------------|
-| `handle.get(key)` | Get scoped value |
+| `handle.get(key)` | Get scoped value within this topic |
 | `handle.keys()` | List keys in this topic |
 | `handle.onReceive(cb)` | `BiConsumer<String, Object>` -- per-key callback |
-| `handle.onUpdate(cb)` | `Consumer<TopicClientPayloadView>` -- full payload callback |
+| `handle.onUpdate(cb)` | `Consumer<TopicClientPayloadView>` -- full payload callback (fires once per batch) |
 
 ### ArrayView (Client-side reader)
 
@@ -856,96 +1007,61 @@ Each topic gets its own isolated payload. No key collisions between topics.
 
 ### Client Events
 
-| Event | Callback Type |
-|-------|--------------|
-| `client.onConnect(cb)` | `Runnable` |
-| `client.onReady(cb)` | `Runnable` |
-| `client.onReceive(cb)` | `BiConsumer<String, Object>` -- per frame (fine-grained) |
-| `client.onUpdate(cb)` | `Runnable` -- per flush batch (use for rendering, fires once per ~100ms batch) |
-| `client.onDisconnect(cb)` | `Runnable` |
-| `client.onError(cb)` | `Consumer<DanWSException>` |
+| Event | Callback Type | When |
+|-------|--------------|------|
+| `client.onConnect(cb)` | `Runnable` | WebSocket connection established |
+| `client.onReady(cb)` | `Runnable` | Auth succeeded + initial state synced |
+| `client.onReceive(cb)` | `BiConsumer<String, Object>` | Per frame -- fine-grained key-level updates |
+| `client.onUpdate(cb)` | `Runnable` | Per flush batch (~100ms) -- use for rendering |
+| `client.onDisconnect(cb)` | `Runnable` | Connection lost |
+| `client.onError(cb)` | `Consumer<DanWSException>` | Error occurred |
 
----
-
-## Configuration
-
-### Server Constructor Variants
+### Shutdown
 
 ```java
-// Simple -- defaults to path="/", ttl=600s, flushInterval=100ms
-new DanWebSocketServer(8080, Mode.BROADCAST);
-
-// Default mode (PRINCIPAL)
-new DanWebSocketServer(8080);
-
-// Custom path and TTL
-new DanWebSocketServer(8080, "/ws", Mode.PRINCIPAL, 300_000);
-
-// Custom flush interval (ms)
-new DanWebSocketServer(8080, "/ws", Mode.BROADCAST, 600_000, 50);
-
-// Full options: port, path, mode, ttl, flushInterval, maxMessageSize, maxValueSize
-new DanWebSocketServer(8080, "/ws", Mode.BROADCAST, 600_000, 100,
-    1_048_576,  // maxMessageSize: 1MB (default)
-    65_536      // maxValueSize: 64KB (default)
-);
+// When your application exits, clean up shared resources:
+DanWebSocketClient.shutdownSharedGroup();
 ```
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `port` | -- | WebSocket listen port |
-| `path` | `"/"` | WebSocket endpoint path |
-| `mode` | `PRINCIPAL` | One of the 4 modes |
-| `ttlMs` | `600000` (10 min) | Session time-to-live after disconnect |
-| `flushIntervalMs` | `100` | Bulk queue flush interval in ms |
-| `maxMessageSize` | `1048576` (1MB) | Max incoming WebSocket message size in bytes |
-| `maxValueSize` | `65536` (64KB) | Max single serialized value size. Throws `VALUE_TOO_LARGE` if exceeded |
-
-### Authorization
-
-```java
-server.enableAuthorization(true);                // default timeout 5s
-server.enableAuthorization(true, 10_000);        // custom timeout 10s
-```
-
-### Debug Logging
-
-By default, all callback errors are silently caught. Enable debug logging to see them:
-
-```java
-// Simple — prints to stderr
-server.setDebug(true);
-
-// Custom logger
-server.setDebug((msg, err) -> {
-    logger.warn("[DanWS] " + msg, err);
-});
-
-// Client too
-client.setDebug(true);
-```
-
-Debug propagates automatically: Server → Session → TopicHandle, Client → TopicClientHandle.
 
 ---
 
 ## Auto-Detected Types
 
-| Java Type | Wire Type | Size |
+| Java Type | Wire Type | Typical Size |
 |-----------|-----------|------|
 | `null` | Null | 0 bytes |
 | `Boolean` | Bool | 1 byte |
-| `Integer` | Int32 | 4 bytes |
-| `Long` | Int64 | 8 bytes |
-| `Float` | Float32 | 4 bytes |
-| `Double` | Float64 | 8 bytes |
+| `Integer` | VarInteger | 1-5 bytes |
+| `Long` | VarInteger | 1-9 bytes |
+| `Short` | VarInteger | 1-3 bytes |
+| `Byte` | VarInteger | 1 byte |
+| `Double` | VarDouble | 2-9 bytes |
+| `Float` | VarFloat | 2-5 bytes |
 | `String` | String | variable |
 | `byte[]` | Binary | variable |
 | `Date` / `Instant` | Timestamp | 8 bytes |
-| `BigDecimal` | Float64 | 8 bytes |
-| `BigInteger` | Int64 (or String if > 63 bits) | 8 bytes |
-| `Short` | Int32 | 4 bytes |
-| `Byte` | Uint8 | 1 byte |
+| `BigDecimal` | VarDouble | 2-9 bytes |
+| `BigInteger` | VarInteger (or String if > 63 bits) | 1-9 bytes |
+
+---
+
+## ServerKeyDelete and ClientKeyRequest
+
+New in v2.2.1, the protocol supports incremental key lifecycle management:
+
+**ServerKeyDelete (0x22):** When you call `clear(key)`, the server sends a compact `ServerKeyDelete` frame for each affected key instead of performing a full reset + resync. This is much faster for clients with many keys.
+
+**ClientKeyRequest (0x23):** If a client receives a value for an unknown keyId (e.g., due to a dropped frame), it sends a `ClientKeyRequest` to recover just that one key's registration, value, and sync -- instead of requesting a full resync.
+
+**KeyId reuse:** When keys are deleted, their keyIds are recycled for future registrations. This prevents keyId exhaustion on long-running servers that create and delete keys frequently.
+
+```java
+// Server: incremental delete instead of full resync
+server.set("temp.data", Map.of("a", 1, "b", 2, "c", 3));
+server.clear("temp.data");
+// Wire: ServerKeyDelete for temp.data.a, temp.data.b, temp.data.c
+// Client removes these keys instantly -- no full resync needed
+```
 
 ---
 
@@ -954,14 +1070,20 @@ Debug propagates automatically: Server → Session → TopicHandle, Client → T
 dan-websocket is engineered for high throughput and low latency:
 
 - **Netty EventLoop architecture** -- Zero extra threads. All I/O runs on Netty's event loops. No thread pool overhead, no context switching.
-- **Principal session index** -- O(1) lookup to find all sessions for a principal. Broadcasting to a user's devices is instant regardless of total connection count.
-- **Key frame caching** -- Key registration frames are cached and reused across connections. A new client joining a server with 1000 keys does not trigger 1000 frame allocations.
-- **Incremental key registration** -- When a new key is added, only that key's registration frame is sent. No full resync needed.
+- **Direct byte manipulation** -- Encoding and decoding operate directly on byte arrays with no intermediate object allocation (new in v2.3.x).
+- **Netty buffer pooling** -- Uses Netty's pooled buffer allocator for zero-copy frame construction where possible.
+- **VarNumber encoding** -- 50-75% smaller payloads for typical numeric values (new in v2.3.x).
+- **FlatStateHelper dedup** -- Shared flatten + diff logic across PrincipalTX, Session, and TopicPayload eliminates code duplication and ensures consistent dedup behavior.
+- **Principal session index** -- O(1) lookup to find all sessions for a principal.
+- **PrincipalTX auto-eviction** -- Configurable TTL cleans up disconnected principal data automatically.
+- **Key frame caching** -- Key registration frames are cached and reused across connections.
+- **Incremental key operations** -- ServerKeyDelete + ClientKeyRequest for efficient key lifecycle.
 - **Value change detection** -- If `set()` is called with the same value, nothing is sent. Field-level dedup at the leaf level.
-- **Array shift optimization (v2.0)** -- Sliding-window patterns send 2 frames instead of N. A 1000-element chart update goes from 1001 frames to 2.
+- **Array shift optimization** -- Sliding-window patterns send 2 frames instead of N.
 - **Ring buffer ArraySync** -- Fixed 2-frame cost for push/shift regardless of array size.
-- **Bulk queue batching** -- Frames are batched every 100ms (configurable) and deduplicated. Multiple `set()` calls for the same key within one batch window send only the latest value.
+- **Bulk queue batching** -- Frames are batched every 100ms (configurable) and deduplicated.
 - **DLE-escaped binary framing** -- Minimal overhead, self-synchronizing. No JSON parsing cost.
+- **Parallel test execution** -- Test suite utilizes up to 28 cores for fast CI feedback.
 - **Tested at scale** -- 60K+ concurrent WebSocket connections on a single server instance.
 
 ---
@@ -981,7 +1103,7 @@ client.onError(err -> {
 |------|-------|-------------|
 | `HEARTBEAT_TIMEOUT` | Client | No heartbeat from server within 15s |
 | `AUTH_REJECTED` | Client | Server rejected the auth token |
-| `UNKNOWN_KEY_ID` | Client | Received value for unregistered key |
+| `UNKNOWN_KEY_ID` | Client | Received value for unregistered key (triggers ClientKeyRequest) |
 | `REMOTE_ERROR` | Client/Session | Error frame from remote peer |
 | `INVALID_MODE` | Server/Session | API not available in current mode |
 | `VALUE_TOO_LARGE` | Server | Serialized value exceeds `maxValueSize` |
@@ -995,22 +1117,38 @@ client.onError(err -> {
 
 ---
 
-## Cross-Language Support
+## Cross-Language Compatibility
 
-dan-websocket is available in two languages with identical APIs and wire-compatible binary protocol:
+dan-websocket is available in two languages with identical wire protocol:
 
 | Language | Package | Install |
 |----------|---------|---------|
+| **Java** | [`io.github.justdancecloud:dan-websocket`](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket) | Gradle / Maven (see above) |
 | **TypeScript** | [`dan-websocket`](https://www.npmjs.com/package/dan-websocket) | `npm install dan-websocket` |
-| **Java** | [`io.github.justdancecloud:dan-websocket`](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket) | Gradle / Maven |
 
-A TypeScript server can serve Java clients and vice versa. Mix and match freely.
+A TypeScript server can serve Java clients and vice versa. The binary protocol (DanProtocol v3.4) is identical on both platforms -- including VarNumber encoding, array shift frames, and ServerKeyDelete/ClientKeyRequest.
+
+```java
+// Java server
+var server = new DanWebSocketServer(8080, Mode.BROADCAST);
+server.set("data", Map.of("count", 42, "label", "hello"));
+```
+
+```typescript
+// TypeScript client -- receives the same binary frames
+const client = new DanWebSocketClient("ws://localhost:8080");
+client.onUpdate(() => {
+    console.log(client.get("data.count"));  // 42
+    console.log(client.get("data.label"));  // "hello"
+});
+client.connect();
+```
 
 ---
 
 ## Protocol
 
-See [dan-protocol.md](./dan-protocol.md) for the full binary protocol specification (DanProtocol v3.3).
+See [dan-protocol.md](./dan-protocol.md) for the full binary protocol specification (DanProtocol v3.4).
 
 ---
 
