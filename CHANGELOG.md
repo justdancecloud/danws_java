@@ -1,143 +1,177 @@
 # Changelog
 
-## 2.2.1 (2026-04-08)
+## [2.4.0] - 2026-04-08
+### Added
+- VAR_INTEGER (0x0D): Zigzag + VarInt encoding for integers
+- VAR_DOUBLE (0x0E): Scale + VarInt mantissa encoding for doubles
+- VAR_FLOAT (0x0F): Scale + VarInt mantissa encoding for floats
+- Parallel test execution (maxParallelForks = availableProcessors)
+- PrincipalTX auto-eviction with configurable TTL
 
-**Protocol: ServerKeyDelete (0x22) + ClientKeyRequest (0x23)**
-- `clear(key)` now sends incremental ServerKeyDelete per key instead of full ServerReset + resync
-- Type change sends ServerKeyDelete(old) + KeyRegistration(new) instead of full resync
-- KeyId reuse: deleted keyIds are recycled for new registrations (prevents keyId exhaustion)
-- Unknown keyId: client sends ClientKeyRequest instead of CLIENT_RESYNC_REQ (single-key recovery)
-- Server responds with KeyRegistration + ServerSync + Value for the requested key only
+### Changed
+- Test time: 5m23s to 1m36s (70% reduction)
+- Numbers auto-detect to VarInteger/VarDouble/VarFloat
 
-## 2.2.0 (2026-04-07) — Stable Release
+## [2.3.1] - 2026-04-08
+### Added
+- ClientKeyRequest O(1) via reverse keyId index in TopicPayload + KeyRegistry
+- Single-pass buildAllFrames() in PrincipalTX, TopicPayload, Session
+- ArrayDiffUtil: MAX_SHIFT=50 + quickHash pre-filter
 
-First stable release. All 4 modes fully tested and documented.
+## [2.3.0] - 2026-04-08
+### Added
+- Direct byte manipulation in Serializer (no ByteBuffer allocation)
+- Single-pass Codec encoding (3 allocations reduced to 1)
+- Netty PooledByteBufAllocator in sendBytes
+- FlatStateHelper: shared set() logic extracted from 3 classes
+- Flatten path pre-computation
 
-**Features:**
-- `maxMessageSize` (default 1MB) — Netty maxFrameSize + StreamParser buffer limit, configurable
-- `maxValueSize` (default 64KB) — per-value size limit with VALUE_TOO_LARGE error
-- `setDebug(boolean)` / `setDebug(BiConsumer)` — injectable debug logger
-- `DanWebSocketClient.shutdownSharedGroup()` — clean application exit
+## [2.2.3] - 2026-04-08
+### Added
+- PrincipalTX auto-eviction after configurable TTL
+- hasActiveSessions() read-only check
 
-**Bug Fixes:**
-- StreamParser buffer bounded by maxMessageSize (prevents OOM)
-- Server.close() no longer deadlocks from Netty thread
-- Session.setLeaf() null-safe for sessionEnqueue
-- Principal index properly cleaned on reconnect
-- TTL future cancelled before re-scheduling
+## [2.2.2] - 2026-04-08
+### Added
+- emitError throws when no listeners (EventEmitter pattern)
+- freedKeyIds pool capped at 10,000
+- wss:// security docs, CQRS docs
 
-**Tests:**
-- Comprehensive mode tests (27 tests covering all 4 modes)
-- Mode guards, maxValueSize enforcement
+## [2.2.1] - 2026-04-07
+### Added
+- Protocol v3.4: ServerKeyDelete (0x22), ClientKeyRequest (0x23)
+- Incremental key deletion, single-key recovery, keyId reuse
 
-**Documentation:**
-- SECURITY.md — vulnerability reporting, security design, threading safety
-- CONTRIBUTING.md — dev setup, PR process, code style
-- docs/architecture.md — layer diagram, data flow, Netty threading model
-- docs/migration.md — version migration guides
+## [2.2.0] - 2026-04-07
+### Added
+- maxMessageSize / maxValueSize configurable
+- Debug logging system
+- Comprehensive mode tests
+- SECURITY.md, CONTRIBUTING.md, docs/
 
-## 2.1.9 (2026-04-07)
-- Fix: StreamParser buffer limit now driven by maxMessageSize setting (was hardcoded 1MB)
-- maxMessageSize flows to both Netty maxFrameSize and StreamParser consistently
+## [2.1.9] - 2026-04-07
+### Fixed
+- StreamParser buffer limit now driven by maxMessageSize setting (was hardcoded 1MB)
 
-## 2.1.8 (2026-04-07)
-- Fix: StreamParser buffer bounded to 1MB (prevents OOM from malformed frames)
-- Fix: Server.close() no longer calls .sync() (prevents deadlock from Netty thread)
-- Fix: Session.setLeaf() null-safe for sessionEnqueue (prevents NPE before bindSessionTX)
-- Fix: Principal index properly cleaned on reconnect (prevents duplicate entries)
-- Fix: TTL future cancelled before re-scheduling on rapid disconnect
-- Add: DanWebSocketClient.shutdownSharedGroup() for clean application exit
+## [2.1.8] - 2026-04-07
+### Fixed
+- StreamParser buffer bounded to 1MB (prevents OOM from malformed frames)
+- Server.close() no longer calls .sync() (prevents deadlock from Netty thread)
+- Session.setLeaf() null-safe for sessionEnqueue (prevents NPE before bindSessionTX)
+- Principal index properly cleaned on reconnect (prevents duplicate entries)
+- TTL future cancelled before re-scheduling on rapid disconnect
 
-## 2.1.7 (2026-04-07)
-- Add: comprehensive mode tests (27 tests) — all 4 modes, mode guards, maxValueSize
+### Added
+- DanWebSocketClient.shutdownSharedGroup() for clean application exit
+
+## [2.1.7] - 2026-04-07
+### Added
+- Comprehensive mode tests (27 tests) covering all 4 modes, mode guards, maxValueSize
+
+### Changed
 - Version sync: TypeScript and Java now share the same version number
 
-## 2.1.6 (2026-04-07)
+## [2.1.6] - 2026-04-07
+### Changed
 - README: detailed mode documentation with complete server + client examples for all 4 modes
-- README: auth flow, topic lifecycle, multi-device sync, params change explained
-- README: version references updated to v2.1.5, protocol v3.3
 
-## 2.1.5 (2026-04-07)
-- Add: `maxMessageSize` (default 1MB) — limits incoming WebSocket frame size via Netty maxFrameSize
-- Add: `maxValueSize` (default 64KB) — throws VALUE_TOO_LARGE if serialized value exceeds limit
-- Size limits propagate to PrincipalTX, Session, TopicPayload
+## [2.1.5] - 2026-04-07
+### Added
+- maxMessageSize (default 1MB): limits incoming WebSocket frame size via Netty maxFrameSize
+- maxValueSize (default 64KB): throws VALUE_TOO_LARGE if serialized value exceeds limit
 
-## 2.1.4 (2026-04-07)
-- Add: debug logger system — `server.setDebug(true)` / `client.setDebug(true)` or custom `BiConsumer<String, Exception>`
-- Fix: all silent `catch (Exception ignored)` blocks now route through debug logger
-- Debug propagates: Server → Session → TopicHandle, Client → TopicClientHandle, BulkQueue
+## [2.1.4] - 2026-04-07
+### Added
+- Debug logger system: server.setDebug(true) / client.setDebug(true) or custom BiConsumer
 
-## 2.1.3 (2026-04-07)
-- Fix: client unsubscribe cleans topicClientHandles (memory leak)
+### Fixed
+- All silent catch (Exception ignored) blocks now route through debug logger
 
-## 2.1.2 (2026-04-07)
-- Add: client HeartbeatManager (10s send, 15s timeout detection)
-- Fix: previousArrays memory leak in PrincipalTX, Session, TopicPayload clear()
-- Fix: client.unsubscribe cleans topicClientHandles (memory leak)
-- Fix: Session.clearKey properly removes flattened sub-keys
-- Optimize: Session.sessionStore ConcurrentHashMap → HashMap
-- Refactor: extract shared UuidUtil (bytesToUuid/uuidToBytes)
+## [2.1.3] - 2026-04-07
+### Fixed
+- Client unsubscribe cleans topicClientHandles (memory leak)
 
-## 2.1.1 (2026-04-07)
-- Refactor: extract shared ArrayDiffUtil (~289 lines removed)
-- Add ReconnectEngine with exponential backoff + jitter (client auto-reconnects)
-- TopicClientHandle.onUpdate now fires per-flush batch (not per-frame)
-- StreamParser: replace List\<Byte> with byte[] buffer (eliminates autoboxing GC)
-- PrincipalTX.store: ConcurrentHashMap → HashMap (EventLoop-only access)
-- Fix applyShiftLeft: always send length after shift (client length restore)
-- Fix Session: remove (double) cast on length — int consistently
+## [2.1.2] - 2026-04-07
+### Added
+- Client HeartbeatManager (10s send, 15s timeout detection)
+
+### Fixed
+- previousArrays memory leak in PrincipalTX, Session, TopicPayload clear()
+- Client.unsubscribe cleans topicClientHandles (memory leak)
+- Session.clearKey properly removes flattened sub-keys
+
+### Changed
+- Session.sessionStore ConcurrentHashMap replaced with HashMap
+
+## [2.1.1] - 2026-04-07
+### Added
+- ReconnectEngine with exponential backoff + jitter (client auto-reconnects)
 - IDENTIFY frame includes protocol version (v3.3), backward-compatible
-- Remove unused: arrayShiftCounters, matchesPrincipal, misleading reconnect callbacks
 
-## 2.1.0 (2026-04-07)
-- **Protocol v3.3**: SERVER_FLUSH_END (0xFF) batch boundary frame
-- **Batch-level `onUpdate`**: fires once per BulkQueue flush (~100ms) instead of per-frame — prevents render storms
-- `onReceive` remains per-frame for fine-grained key-level listeners
-- BulkQueue automatically appends SERVER_FLUSH_END at the end of every flush
-- Client `onUpdate(Runnable)` callback added
+### Changed
+- Extract shared ArrayDiffUtil (~289 lines removed)
+- TopicClientHandle.onUpdate now fires per-flush batch (not per-frame)
+- StreamParser: replace List<Byte> with byte[] buffer (eliminates autoboxing GC)
+- PrincipalTX.store: ConcurrentHashMap replaced with HashMap (EventLoop-only access)
 
-## 2.0.1 (2026-04-07)
-- Fix: Redundant full sync — server ignores CLIENT_READY when already in READY state
-- Fix: Client only sends CLIENT_READY when state !== READY (prevents periodic full transmission)
-- Fix: Heartbeat double-send removed — server no longer echoes heartbeat on receive
-- Add: FrameCountTest.java (8 tests) verifying array optimization efficiency
-- Add: Frame count verification in README with actual E2E test results
+### Fixed
+- applyShiftLeft: always send length after shift (client length restore)
+- Session: remove (double) cast on length, use int consistently
 
-## 2.0.0 (2026-04-06)
-- **Protocol v3.2**: ARRAY_SHIFT_LEFT (0x20) and ARRAY_SHIFT_RIGHT (0x21) frame types
-- **Auto array diff detection**: shift, append, pop patterns detected automatically
-- **Smart shift detection algorithm**: no k=1..5 limit, any shift amount supported
-- **Array shrink without full resync**: stale index keys cleaned via .length
-- **Incremental key registration** for Session and TopicPayload (3 frames instead of full resync)
-- **Value change detection** in PrincipalTX and Session setLeaf — unchanged values no longer re-sent
-- **Principal session index**: O(1) lookup instead of O(N) scan on every value set
-- **Key frame caching**: PrincipalTX avoids rebuilding key frames on every resync
-- **Wire path caching**: TopicPayload avoids string allocation on every buildKeyFrames
-- **Configurable BulkQueue flush interval** (`flushIntervalMs` server option, default 100ms)
+## [2.1.0] - 2026-04-07
+### Added
+- Protocol v3.3: SERVER_FLUSH_END (0xFF) batch boundary frame
+- Batch-level onUpdate: fires once per BulkQueue flush (~100ms) instead of per-frame
+- Client onUpdate(Runnable) callback
+
+## [2.0.1] - 2026-04-07
+### Fixed
+- Redundant full sync: server ignores CLIENT_READY when already in READY state
+- Client only sends CLIENT_READY when state is not READY (prevents periodic full transmission)
+- Heartbeat double-send removed: server no longer echoes heartbeat on receive
+
+### Added
+- FrameCountTest.java (8 tests) verifying array optimization efficiency
+
+## [2.0.0] - 2026-04-06
+### Added
+- Protocol v3.2: ARRAY_SHIFT_LEFT (0x20) and ARRAY_SHIFT_RIGHT (0x21) frame types
+- Auto array diff detection: shift, append, pop patterns detected automatically
+- Smart shift detection algorithm: no k=1..5 limit, any shift amount supported
+- Array shrink without full resync: stale index keys cleaned via .length
+- Incremental key registration for Session and TopicPayload
+- Value change detection in PrincipalTX and Session setLeaf
+- Principal session index: O(1) lookup instead of O(N) scan
+- Key frame caching in PrincipalTX
+- Wire path caching in TopicPayload
+- Configurable BulkQueue flush interval (flushIntervalMs server option, default 100ms)
 - ArraySync ring buffer API + ArrayView client-side read-only view
-- ArraySyncE2ETest (24 tests), FrameCountTest (8 tests)
 
-## 1.0.3 (2026-04-07)
-- Perf: Incremental key registration for Session and TopicPayload
-- Add: BigDecimal → Float64, BigInteger → Int64/String auto-detection
-- Add: Short → Int32, Byte → Uint8 auto-detection
+## [1.0.3] - 2026-04-07
+### Added
+- Incremental key registration for Session and TopicPayload
+- BigDecimal to Float64, BigInteger to Int64/String auto-detection
+- Short to Int32, Byte to Uint8 auto-detection
 
-## 1.0.2 (2026-04-07)
-- Perf: Principal session index — O(1) lookup
-- Perf: PrincipalTX key frame caching
-- Perf: TopicPayload wire path caching
-- Add: Configurable BulkQueue flush interval
+## [1.0.2] - 2026-04-07
+### Changed
+- Principal session index: O(1) lookup
+- PrincipalTX key frame caching
+- TopicPayload wire path caching
+- Configurable BulkQueue flush interval
 
-## 1.0.1 (2026-04-06)
-- Fix: Flatten value change detection — unchanged leaf values no longer re-sent
+## [1.0.1] - 2026-04-06
+### Fixed
+- Flatten value change detection: unchanged leaf values no longer re-sent
 
-## 1.0.0 (2026-04-06)
-- **Stable release** — production-ready
+## [1.0.0] - 2026-04-06
+### Added
+- Stable release: production-ready
 - Netty EventLoop architecture (zero extra threads)
 - 4 modes: Broadcast, Principal, Session Topic, Session Principal Topic
 - Auto-flatten objects/arrays to binary leaf keys (depth 10, circular ref detection)
 - 4-byte keyId (supports 4B+ keys)
-- Topic API: `setCallback` + `setDelayedTask` pattern with EventType
+- Topic API: setCallback + setDelayedTask pattern with EventType
 - TopicPayload scoped per-topic key-value store
 - BulkQueue: 100ms batch flush with ServerValue dedup
 - Heartbeat with auto-reconnection
