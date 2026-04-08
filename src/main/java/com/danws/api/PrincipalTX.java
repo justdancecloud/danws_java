@@ -17,6 +17,7 @@ public class PrincipalTX {
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
     private List<Frame> cachedKeyFrames = null;
     private final Map<String, List<Object>> previousArrays = new HashMap<>();
+    private final List<Integer> freedKeyIds = new ArrayList<>();
 
     @FunctionalInterface
     interface TriConsumer<A, B, C> { void accept(A a, B b, C c); }
@@ -37,6 +38,13 @@ public class PrincipalTX {
     void setOnValue(Consumer<Frame> fn) { this.onValueSet = fn; }
     void setOnResync(Runnable fn) { this.onKeysChanged = fn; }
     void setOnIncremental(TriConsumer<Frame, Frame, Frame> fn) { this.onIncrementalKey = fn; }
+
+    private int allocateKeyId() {
+        if (!freedKeyIds.isEmpty()) {
+            return freedKeyIds.remove(freedKeyIds.size() - 1);
+        }
+        return registry.nextId();
+    }
 
     public void set(String key, Object value) {
         if (Flatten.shouldFlatten(value)) {
@@ -89,7 +97,11 @@ public class PrincipalTX {
         if (entry != null) {
             registry.remove(path);
             store.remove(entry.keyId());
-            triggerResync();
+            freedKeyIds.add(entry.keyId());
+            cachedKeyFrames = null;
+            if (onValueSet != null) {
+                onValueSet.accept(Frame.keyDelete(entry.keyId()));
+            }
         }
     }
 
@@ -104,7 +116,8 @@ public class PrincipalTX {
         KeyEntry existing = registry.getByPath(key);
 
         if (existing == null) {
-            int keyId = registry.registerNew(key, newType);
+            int keyId = allocateKeyId();
+            registry.registerOne(keyId, key, newType);
             store.put(keyId, value);
             cachedKeyFrames = null;
             if (onIncrementalKey != null) {
@@ -120,12 +133,26 @@ public class PrincipalTX {
         }
 
         if (existing.type() != newType) {
-            // Type changed — re-register
+            // Type changed — delete old + re-register with new type
             registry.remove(key);
-            int keyId = registry.registerNew(key, newType);
             store.remove(existing.keyId());
+            freedKeyIds.add(existing.keyId());
+            cachedKeyFrames = null;
+            if (onValueSet != null) {
+                onValueSet.accept(Frame.keyDelete(existing.keyId()));
+            }
+            int keyId = allocateKeyId();
+            registry.registerOne(keyId, key, newType);
             store.put(keyId, value);
-            triggerResync();
+            if (onIncrementalKey != null) {
+                onIncrementalKey.accept(
+                    Frame.keyRegistration(keyId, newType, key),
+                    Frame.signal(FrameType.SERVER_SYNC),
+                    Frame.value(keyId, newType, value)
+                );
+            } else {
+                triggerResync();
+            }
             return;
         }
 
@@ -158,19 +185,17 @@ public class PrincipalTX {
             for (String path : flatKeys) clearLeaf(path);
             flattenedKeys.remove(key);
             previousArrays.remove(key);
-            triggerResync();
         } else {
-            KeyEntry entry = registry.getByPath(key);
-            if (entry != null) {
-                registry.remove(key);
-                store.remove(entry.keyId());
-                triggerResync();
-            }
+            clearLeaf(key);
+            previousArrays.remove(key);
         }
     }
 
     public void clear() {
         if (registry.size() > 0) {
+            for (KeyEntry entry : registry.entries()) {
+                freedKeyIds.add(entry.keyId());
+            }
             registry.clear();
             store.clear();
             flattenedKeys.clear();

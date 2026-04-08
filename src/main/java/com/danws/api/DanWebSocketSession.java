@@ -34,6 +34,7 @@ public class DanWebSocketSession {
     private final KeyRegistry sessionRegistry = new KeyRegistry();
     private final Map<Integer, Object> sessionStore = new HashMap<>();
     private int nextKeyId = 1; // global keyId counter — shared by flat session keys and all topic payloads
+    private final List<Integer> freedKeyIds = new ArrayList<>();
     private Consumer<Frame> sessionEnqueue;
     private boolean sessionBound;
     private final Map<String, Set<String>> flattenedKeys = new java.util.HashMap<>();
@@ -72,6 +73,13 @@ public class DanWebSocketSession {
         state = State.DISCONNECTED;
     }
 
+    private int allocateKeyId() {
+        if (!freedKeyIds.isEmpty()) {
+            return freedKeyIds.remove(freedKeyIds.size() - 1);
+        }
+        return nextKeyId++;
+    }
+
     // ---- Session-level flat data API (backward compat) ----
 
     public void set(String key, Object value) {
@@ -96,14 +104,17 @@ public class DanWebSocketSession {
             Map<String, Object> flattened = Flatten.flatten(key, value);
             Set<String> newKeys = flattened.keySet();
             Set<String> oldKeys = flattenedKeys.get(key);
-            boolean needsResync = false;
             if (oldKeys != null) {
                 for (String oldPath : oldKeys) {
                     if (!newKeys.contains(oldPath)) {
                         if (ArrayDiffUtil.isArrayIndexKey(key, oldPath)) continue; // stale array index — client uses .length
                         KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(oldPath);
-                        if (entry != null) { sessionRegistry.remove(oldPath); sessionStore.remove(entry.keyId()); }
-                        needsResync = true;
+                        if (entry != null) {
+                            sessionRegistry.remove(oldPath);
+                            sessionStore.remove(entry.keyId());
+                            freedKeyIds.add(entry.keyId());
+                            if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(entry.keyId()));
+                        }
                     }
                 }
             }
@@ -111,7 +122,6 @@ public class DanWebSocketSession {
             for (var entry : flattened.entrySet()) {
                 setLeaf(entry.getKey(), entry.getValue());
             }
-            if (needsResync) triggerSessionResync();
             return;
         }
         setLeaf(key, value);
@@ -140,7 +150,7 @@ public class DanWebSocketSession {
         KeyRegistry.KeyEntry existing = sessionRegistry.getByPath(key);
 
         if (existing == null) {
-            int keyId = nextKeyId++;
+            int keyId = allocateKeyId();
             sessionRegistry.registerOne(keyId, key, newType);
             sessionStore.put(keyId, value);
             Consumer<Frame> enq = sessionEnqueue;
@@ -154,11 +164,18 @@ public class DanWebSocketSession {
 
         if (existing.type() != newType) {
             sessionRegistry.remove(key);
-            int keyId = nextKeyId++;
-            sessionRegistry.registerOne(keyId, key, newType);
             sessionStore.remove(existing.keyId());
+            freedKeyIds.add(existing.keyId());
+            if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(existing.keyId()));
+            int keyId = allocateKeyId();
+            sessionRegistry.registerOne(keyId, key, newType);
             sessionStore.put(keyId, value);
-            triggerSessionResync();
+            Consumer<Frame> enq = sessionEnqueue;
+            if (enq != null) {
+                enq.accept(Frame.keyRegistration(keyId, newType, key));
+                enq.accept(Frame.signal(FrameType.SERVER_SYNC));
+                enq.accept(Frame.value(keyId, newType, value));
+            }
             return;
         }
 
@@ -185,18 +202,23 @@ public class DanWebSocketSession {
         if (flatKeys != null) {
             for (String path : flatKeys) {
                 KeyRegistry.KeyEntry e = sessionRegistry.getByPath(path);
-                if (e != null) { sessionRegistry.remove(path); sessionStore.remove(e.keyId()); }
+                if (e != null) {
+                    sessionRegistry.remove(path);
+                    sessionStore.remove(e.keyId());
+                    freedKeyIds.add(e.keyId());
+                    if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(e.keyId()));
+                }
             }
             flattenedKeys.remove(key);
             previousArrays.remove(key);
-            triggerSessionResync();
         } else {
             KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(key);
             if (entry != null) {
                 sessionRegistry.remove(key);
                 sessionStore.remove(entry.keyId());
+                freedKeyIds.add(entry.keyId());
                 previousArrays.remove(key);
-                triggerSessionResync();
+                if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(entry.keyId()));
             }
         }
     }
@@ -204,6 +226,9 @@ public class DanWebSocketSession {
     public void clearKey() {
         if (!sessionBound) return;
         if (sessionRegistry.size() > 0) {
+            for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
+                freedKeyIds.add(entry.keyId());
+            }
             sessionRegistry.clear();
             sessionStore.clear();
             flattenedKeys.clear();
@@ -298,6 +323,9 @@ public class DanWebSocketSession {
                     clientReadyReceived = false;
                 }
             }
+            case CLIENT_KEY_REQUEST -> {
+                handleKeyRequest(frame.keyId());
+            }
             case ERROR -> {
                 var err = new DanWSException("REMOTE_ERROR", String.valueOf(frame.payload()));
                 onError.forEach(cb -> cb.accept(err));
@@ -335,7 +363,7 @@ public class DanWebSocketSession {
 
     TopicHandle createTopicHandle(String name, Map<String, Object> params, int wireIndex) {
         if (wireIndex >= topicIndex) topicIndex = wireIndex + 1;
-        TopicPayload payload = new TopicPayload(wireIndex, () -> nextKeyId++, maxValueSize);
+        TopicPayload payload = new TopicPayload(wireIndex, this::allocateKeyId, id -> freedKeyIds.add(id), maxValueSize);
         if (sessionEnqueue != null) {
             payload.bind(sessionEnqueue, this::triggerSessionResync);
         }
@@ -361,6 +389,53 @@ public class DanWebSocketSession {
     }
 
     // ---- Private ----
+
+    private void handleKeyRequest(int keyId) {
+        if (enqueueFrame == null) return;
+
+        // Search in TX providers (broadcast/principal mode)
+        if (txKeyFrameProvider != null && txValueFrameProvider != null) {
+            for (Frame kf : txKeyFrameProvider.get()) {
+                if (kf.keyId() == keyId && kf.frameType() == FrameType.SERVER_KEY_REGISTRATION) {
+                    enqueueFrame.accept(kf);
+                    enqueueFrame.accept(Frame.signal(FrameType.SERVER_SYNC));
+                    for (Frame vf : txValueFrameProvider.get()) {
+                        if (vf.keyId() == keyId) { enqueueFrame.accept(vf); break; }
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Search in session-level flat state (topic mode)
+        KeyRegistry.KeyEntry sessionEntry = null;
+        for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
+            if (entry.keyId() == keyId) { sessionEntry = entry; break; }
+        }
+        if (sessionEntry != null) {
+            enqueueFrame.accept(Frame.keyRegistration(sessionEntry.keyId(), sessionEntry.type(), sessionEntry.path()));
+            enqueueFrame.accept(Frame.signal(FrameType.SERVER_SYNC));
+            Object val = sessionStore.get(sessionEntry.keyId());
+            if (val != null) {
+                enqueueFrame.accept(Frame.value(sessionEntry.keyId(), sessionEntry.type(), val));
+            }
+            return;
+        }
+
+        // Search in topic payloads
+        for (TopicHandle handle : topicHandles.values()) {
+            for (Frame kf : handle.payload().buildKeyFrames()) {
+                if (kf.keyId() == keyId) {
+                    enqueueFrame.accept(kf);
+                    enqueueFrame.accept(Frame.signal(FrameType.SERVER_SYNC));
+                    for (Frame vf : handle.payload().buildValueFrames()) {
+                        if (vf.keyId() == keyId) { enqueueFrame.accept(vf); break; }
+                    }
+                    return;
+                }
+            }
+        }
+    }
 
     private void triggerSessionResync() {
         if (sessionEnqueue == null) return;

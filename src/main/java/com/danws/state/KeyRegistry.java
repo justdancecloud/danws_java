@@ -55,6 +55,11 @@ public class KeyRegistry {
         return keyId;
     }
 
+    /** Return the next keyId and advance the counter, without registering any entry. */
+    public int nextId() {
+        return nextId++;
+    }
+
     public KeyEntry getByKeyId(int keyId) { return byId.get(keyId); }
     public KeyEntry getByPath(String path) { return byPath.get(path); }
     public boolean hasKeyId(int keyId) { return byId.containsKey(keyId); }
@@ -67,6 +72,12 @@ public class KeyRegistry {
         KeyEntry e = byPath.remove(path);
         if (e != null) { byId.remove(e.keyId()); return true; }
         return false;
+    }
+
+    public KeyEntry removeByKeyId(int keyId) {
+        KeyEntry e = byId.remove(keyId);
+        if (e != null) byPath.remove(e.path());
+        return e;
     }
 
     public void clear() {

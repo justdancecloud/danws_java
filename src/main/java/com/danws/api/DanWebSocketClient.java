@@ -69,6 +69,7 @@ public class DanWebSocketClient {
 
     private final KeyRegistry registry = new KeyRegistry();
     private final Map<Integer, Object> store = new ConcurrentHashMap<>();
+    private final Map<Integer, Frame> pendingValues = new ConcurrentHashMap<>();
     private final StreamParser parser = new StreamParser(); // reuse instance
 
     // Topic state
@@ -339,6 +340,24 @@ public class DanWebSocketClient {
             case SERVER_KEY_REGISTRATION -> {
                 if (state == State.IDENTIFYING) state = State.SYNCHRONIZING;
                 registry.registerOne(frame.keyId(), (String) frame.payload(), frame.dataType());
+                // Apply any pending value that arrived before this key was registered
+                Frame pending = pendingValues.remove(frame.keyId());
+                if (pending != null) {
+                    store.put(frame.keyId(), pending.payload());
+                    String keyPath = (String) frame.payload();
+                    Matcher m = TOPIC_WIRE_PATTERN.matcher(keyPath);
+                    if (m.matches()) {
+                        int idx = Integer.parseInt(m.group(1));
+                        String key = m.group(2);
+                        String topicName = indexToTopic.get(idx);
+                        if (topicName != null) {
+                            TopicClientHandle handle = topicClientHandles.get(topicName);
+                            if (handle != null) handle.notify(key, pending.payload());
+                        }
+                    } else {
+                        for (var cb : onReceive) { try { cb.accept(keyPath, pending.payload()); } catch (Exception e) { log("onReceive callback error", e); } }
+                    }
+                }
             }
             case SERVER_SYNC -> {
                 if (state == State.IDENTIFYING) state = State.SYNCHRONIZING;
@@ -352,8 +371,10 @@ public class DanWebSocketClient {
             }
             case SERVER_VALUE -> {
                 if (!registry.hasKeyId(frame.keyId())) {
-                    onError.forEach(cb -> cb.accept(new DanWSException("UNKNOWN_KEY_ID", "Unknown key ID: " + frame.keyId())));
-                    sendFrame(Frame.signal(FrameType.CLIENT_RESYNC_REQ));
+                    // Request only this specific key instead of full resync
+                    sendFrame(new Frame(FrameType.CLIENT_KEY_REQUEST, frame.keyId(), DataType.NULL, null));
+                    // Buffer the value — it will be applied after key info arrives
+                    pendingValues.put(frame.keyId(), frame);
                     return;
                 }
                 store.put(frame.keyId(), frame.payload());
@@ -482,6 +503,25 @@ public class DanWebSocketClient {
                     }
                 }
             }
+            case SERVER_KEY_DELETE -> {
+                KeyEntry deletedEntry = registry.removeByKeyId(frame.keyId());
+                store.remove(frame.keyId());
+                if (deletedEntry != null) {
+                    String path = deletedEntry.path();
+                    Matcher m = TOPIC_WIRE_PATTERN.matcher(path);
+                    if (m.matches()) {
+                        int idx = Integer.parseInt(m.group(1));
+                        String key = m.group(2);
+                        String topicName = indexToTopic.get(idx);
+                        if (topicName != null) {
+                            TopicClientHandle handle = topicClientHandles.get(topicName);
+                            if (handle != null) handle.notify(key, null);
+                        }
+                    } else {
+                        for (var cb : onReceive) { try { cb.accept(path, null); } catch (Exception e) { log("onReceive callback error", e); } }
+                    }
+                }
+            }
             case SERVER_FLUSH_END -> {
                 for (var cb : onUpdate) { try { cb.run(); } catch (Exception e) { log("onUpdate callback error", e); } }
                 for (var handle : topicClientHandles.values()) { handle.flushUpdate(); }
@@ -490,6 +530,7 @@ public class DanWebSocketClient {
             case SERVER_RESET -> {
                 registry.clear();
                 store.clear();
+                pendingValues.clear();
                 state = State.SYNCHRONIZING;
             }
             case ERROR -> {

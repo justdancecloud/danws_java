@@ -4,6 +4,7 @@ import com.danws.protocol.*;
 
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.function.IntSupplier;
 
 public class TopicPayload {
@@ -13,6 +14,7 @@ public class TopicPayload {
     private final Map<String, Entry> entries = new LinkedHashMap<>();
     private final int index;
     private final IntSupplier allocateKeyId;
+    private final IntConsumer freeKeyId;
     private Consumer<Frame> enqueue;
     private Runnable onResync;
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
@@ -21,12 +23,17 @@ public class TopicPayload {
     private final int maxValueSize;
 
     public TopicPayload(int index, IntSupplier allocateKeyId) {
-        this(index, allocateKeyId, 65_536);
+        this(index, allocateKeyId, id -> {}, 65_536);
     }
 
     public TopicPayload(int index, IntSupplier allocateKeyId, int maxValueSize) {
+        this(index, allocateKeyId, id -> {}, maxValueSize);
+    }
+
+    public TopicPayload(int index, IntSupplier allocateKeyId, IntConsumer freeKeyId, int maxValueSize) {
         this.index = index;
         this.allocateKeyId = allocateKeyId;
+        this.freeKeyId = freeKeyId;
         this.maxValueSize = maxValueSize;
     }
 
@@ -54,21 +61,22 @@ public class TopicPayload {
             Map<String, Object> flattened = Flatten.flatten(key, value);
             Set<String> newKeys = flattened.keySet();
             Set<String> oldKeys = flattenedKeys.get(key);
-            boolean needsResync = false;
             if (oldKeys != null) {
                 for (String oldPath : oldKeys) {
                     if (!newKeys.contains(oldPath)) {
                         if (ArrayDiffUtil.isArrayIndexKey(key, oldPath)) continue; // stale array index — client uses .length
-                        entries.remove(oldPath);
-                        needsResync = true;
+                        Entry removed = entries.remove(oldPath);
+                        if (removed != null) {
+                            freeKeyId.accept(removed.keyId());
+                            if (enqueue != null) enqueue.accept(Frame.keyDelete(removed.keyId()));
+                        }
                     }
                 }
             }
             flattenedKeys.put(key, new HashSet<>(newKeys));
             for (var entry : flattened.entrySet()) {
-                if (setLeafInternal(entry.getKey(), entry.getValue())) needsResync = true;
+                setLeafInternal(entry.getKey(), entry.getValue());
             }
-            if (needsResync && onResync != null) onResync.run();
             return;
         }
         setLeafDirect(key, value);
@@ -113,8 +121,18 @@ public class TopicPayload {
         }
 
         if (existing.type() != newType) {
-            entries.put(key, new Entry(existing.keyId(), newType, value));
-            return true;
+            // Type changed — delete old + re-register
+            freeKeyId.accept(existing.keyId());
+            if (enqueue != null) enqueue.accept(Frame.keyDelete(existing.keyId()));
+            int keyId = allocateKeyId.getAsInt();
+            entries.put(key, new Entry(keyId, newType, value));
+            if (enqueue != null) {
+                String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
+                enqueue.accept(Frame.keyRegistration(keyId, newType, wirePath));
+                enqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
+                enqueue.accept(Frame.value(keyId, newType, value));
+            }
+            return false;
         }
 
         if (Objects.equals(existing.value(), value)) return false;
@@ -149,8 +167,17 @@ public class TopicPayload {
         }
 
         if (existing.type() != newType) {
-            entries.put(key, new Entry(existing.keyId(), newType, value));
-            if (onResync != null) onResync.run();
+            // Type changed — delete old + re-register
+            freeKeyId.accept(existing.keyId());
+            if (enqueue != null) enqueue.accept(Frame.keyDelete(existing.keyId()));
+            int keyId = allocateKeyId.getAsInt();
+            entries.put(key, new Entry(keyId, newType, value));
+            if (enqueue != null) {
+                String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
+                enqueue.accept(Frame.keyRegistration(keyId, newType, wirePath));
+                enqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
+                enqueue.accept(Frame.value(keyId, newType, value));
+            }
             return;
         }
 
@@ -180,21 +207,31 @@ public class TopicPayload {
         Set<String> flatKeys = flattenedKeys.get(key);
         if (flatKeys != null) {
             for (String path : flatKeys) {
-                entries.remove(path);
+                Entry e = entries.remove(path);
                 wirePathCache.remove(path);
+                if (e != null) {
+                    freeKeyId.accept(e.keyId());
+                    if (enqueue != null) enqueue.accept(Frame.keyDelete(e.keyId()));
+                }
             }
             flattenedKeys.remove(key);
             previousArrays.remove(key);
-            if (onResync != null) onResync.run();
-        } else if (entries.remove(key) != null) {
-            wirePathCache.remove(key);
-            previousArrays.remove(key);
-            if (onResync != null) onResync.run();
+        } else {
+            Entry e = entries.remove(key);
+            if (e != null) {
+                wirePathCache.remove(key);
+                previousArrays.remove(key);
+                freeKeyId.accept(e.keyId());
+                if (enqueue != null) enqueue.accept(Frame.keyDelete(e.keyId()));
+            }
         }
     }
 
     public void clear() {
         if (!entries.isEmpty()) {
+            for (Entry e : entries.values()) {
+                freeKeyId.accept(e.keyId());
+            }
             entries.clear();
             flattenedKeys.clear();
             wirePathCache.clear();

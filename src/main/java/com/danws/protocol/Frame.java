@@ -29,4 +29,8 @@ public class Frame {
     public static Frame value(int keyId, DataType dataType, Object value) {
         return new Frame(FrameType.SERVER_VALUE, keyId, dataType, value);
     }
+
+    public static Frame keyDelete(int keyId) {
+        return new Frame(FrameType.SERVER_KEY_DELETE, keyId, DataType.NULL, null);
+    }
 }
