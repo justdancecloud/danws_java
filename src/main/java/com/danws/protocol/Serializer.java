@@ -14,13 +14,37 @@ public final class Serializer {
             case NULL -> new byte[0];
             case BOOL -> new byte[]{(Boolean) value ? (byte) 0x01 : (byte) 0x00};
             case UINT8 -> new byte[]{((Number) value).byteValue()};
-            case UINT16 -> ByteBuffer.allocate(2).putShort(((Number) value).shortValue()).array();
-            case UINT32 -> ByteBuffer.allocate(4).putInt(((Number) value).intValue()).array();
-            case UINT64 -> ByteBuffer.allocate(8).putLong(((Number) value).longValue()).array();
-            case INT32 -> ByteBuffer.allocate(4).putInt(((Number) value).intValue()).array();
-            case INT64 -> ByteBuffer.allocate(8).putLong(((Number) value).longValue()).array();
-            case FLOAT32 -> ByteBuffer.allocate(4).putFloat(((Number) value).floatValue()).array();
-            case FLOAT64 -> ByteBuffer.allocate(8).putDouble(((Number) value).doubleValue()).array();
+            case UINT16 -> {
+                int val = ((Number) value).intValue();
+                yield new byte[] { (byte)(val >>> 8), (byte)val };
+            }
+            case UINT32 -> {
+                int val = ((Number) value).intValue();
+                yield new byte[] { (byte)(val >>> 24), (byte)(val >>> 16), (byte)(val >>> 8), (byte)val };
+            }
+            case UINT64 -> {
+                long val = ((Number) value).longValue();
+                yield new byte[] { (byte)(val >>> 56), (byte)(val >>> 48), (byte)(val >>> 40), (byte)(val >>> 32),
+                                    (byte)(val >>> 24), (byte)(val >>> 16), (byte)(val >>> 8), (byte)val };
+            }
+            case INT32 -> {
+                int val = ((Number) value).intValue();
+                yield new byte[] { (byte)(val >>> 24), (byte)(val >>> 16), (byte)(val >>> 8), (byte)val };
+            }
+            case INT64 -> {
+                long val = ((Number) value).longValue();
+                yield new byte[] { (byte)(val >>> 56), (byte)(val >>> 48), (byte)(val >>> 40), (byte)(val >>> 32),
+                                    (byte)(val >>> 24), (byte)(val >>> 16), (byte)(val >>> 8), (byte)val };
+            }
+            case FLOAT32 -> {
+                int bits = Float.floatToIntBits(((Number) value).floatValue());
+                yield new byte[] { (byte)(bits >>> 24), (byte)(bits >>> 16), (byte)(bits >>> 8), (byte)bits };
+            }
+            case FLOAT64 -> {
+                long bits = Double.doubleToLongBits(((Number) value).doubleValue());
+                yield new byte[] { (byte)(bits >>> 56), (byte)(bits >>> 48), (byte)(bits >>> 40), (byte)(bits >>> 32),
+                                    (byte)(bits >>> 24), (byte)(bits >>> 16), (byte)(bits >>> 8), (byte)bits };
+            }
             case STRING -> (value instanceof String s ? s : value.toString()).getBytes(StandardCharsets.UTF_8);
             case BINARY -> (byte[]) value;
             case TIMESTAMP -> {
@@ -29,7 +53,8 @@ public final class Serializer {
                 else if (value instanceof Instant i) ms = i.toEpochMilli();
                 else if (value instanceof Number n) ms = n.longValue();
                 else throw new DanWSException("INVALID_VALUE_TYPE", "Timestamp requires Date, Instant, or long");
-                yield ByteBuffer.allocate(8).putLong(ms).array();
+                yield new byte[] { (byte)(ms >>> 56), (byte)(ms >>> 48), (byte)(ms >>> 40), (byte)(ms >>> 32),
+                                    (byte)(ms >>> 24), (byte)(ms >>> 16), (byte)(ms >>> 8), (byte)ms };
             }
         };
     }

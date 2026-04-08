@@ -7,7 +7,6 @@ import com.danws.state.KeyRegistry;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
@@ -644,7 +643,9 @@ public class DanWebSocketServer {
 
     private static void sendBytes(Channel ch, byte[] data) {
         if (ch != null && ch.isActive()) {
-            ch.writeAndFlush(new BinaryWebSocketFrame(Unpooled.wrappedBuffer(data)));
+            ByteBuf buf = ch.alloc().buffer(data.length);
+            buf.writeBytes(data);
+            ch.writeAndFlush(new BinaryWebSocketFrame(buf));
         }
     }
 

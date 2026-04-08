@@ -13,6 +13,9 @@ final class ArrayDiffUtil {
 
     private ArrayDiffUtil() {}
 
+    /** Size limit: skip shift detection for very large arrays (O(n^2) worst case). */
+    private static final int SHIFT_DETECTION_SIZE_LIMIT = 1000;
+
     /**
      * Detect left or right shift between old and new arrays.
      * Returns int[2]: [direction, count] where direction: 0=none, 1=left, 2=right.
@@ -20,6 +23,16 @@ final class ArrayDiffUtil {
     static int[] detectShift(List<Object> oldArr, List<?> newArr) {
         int oldLen = oldArr.size();
         int newLen = newArr.size();
+
+        // Early exit: if first elements match, no shift occurred
+        if (Objects.equals(oldArr.get(0), newArr.get(0))) {
+            return new int[]{0, 0};
+        }
+
+        // Skip shift detection for large arrays to avoid O(n^2) worst case
+        if (oldLen > SHIFT_DETECTION_SIZE_LIMIT || newLen > SHIFT_DETECTION_SIZE_LIMIT) {
+            return new int[]{0, 0};
+        }
 
         // 1. Left shift: find new[0] in oldArr → gives shift amount k
         Object newFirst = newArr.get(0);

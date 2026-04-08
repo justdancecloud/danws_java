@@ -97,45 +97,18 @@ public class DanWebSocketSession {
         if (!sessionBound) {
             throw new DanWSException("INVALID_MODE", "session.set() is only available in topic modes.");
         }
-        if (Flatten.shouldFlatten(value)) {
-            // Array shift detection for List values
-            if (value instanceof List<?> newArr) {
-                List<Object> oldArr = previousArrays.get(key);
-                if (oldArr != null && !oldArr.isEmpty() && !newArr.isEmpty()) {
-                    int[] shift = ArrayDiffUtil.detectShift(oldArr, newArr);
-                    if (shift[0] != 0) {
-                        var ctx = buildShiftContext();
-                        if (shift[0] == 1) { ArrayDiffUtil.applyShiftLeft(ctx, key, oldArr, newArr, shift[1]); return; }
-                        if (shift[0] == 2) { ArrayDiffUtil.applyShiftRight(ctx, key, oldArr, newArr, shift[1]); return; }
-                    }
-                }
-                previousArrays.put(key, new java.util.ArrayList<>(newArr));
-            }
+        FlatStateHelper.set(key, value, flattenedKeys, previousArrays,
+                this::buildShiftContext, this::setLeaf, this::deleteSessionKey, false);
+    }
 
-            Map<String, Object> flattened = Flatten.flatten(key, value);
-            Set<String> newKeys = flattened.keySet();
-            Set<String> oldKeys = flattenedKeys.get(key);
-            if (oldKeys != null) {
-                for (String oldPath : oldKeys) {
-                    if (!newKeys.contains(oldPath)) {
-                        if (ArrayDiffUtil.isArrayIndexKey(key, oldPath)) continue; // stale array index — client uses .length
-                        KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(oldPath);
-                        if (entry != null) {
-                            sessionRegistry.remove(oldPath);
-                            sessionStore.remove(entry.keyId());
-                            if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
-                            if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(entry.keyId()));
-                        }
-                    }
-                }
-            }
-            flattenedKeys.put(key, new java.util.HashSet<>(newKeys));
-            for (var entry : flattened.entrySet()) {
-                setLeaf(entry.getKey(), entry.getValue());
-            }
-            return;
+    private void deleteSessionKey(String path) {
+        KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(path);
+        if (entry != null) {
+            sessionRegistry.remove(path);
+            sessionStore.remove(entry.keyId());
+            if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
+            if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(entry.keyId()));
         }
-        setLeaf(key, value);
     }
 
     private ArrayDiffUtil.ShiftContext buildShiftContext() {

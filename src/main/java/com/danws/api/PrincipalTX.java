@@ -48,37 +48,8 @@ public class PrincipalTX {
     }
 
     public void set(String key, Object value) {
-        if (Flatten.shouldFlatten(value)) {
-            if (value instanceof List<?> newArr) {
-                List<Object> oldArr = previousArrays.get(key);
-                if (oldArr != null && !oldArr.isEmpty() && !newArr.isEmpty() && ArrayDiffUtil.isPrimitiveArray(newArr)) {
-                    int[] shift = ArrayDiffUtil.detectShift(oldArr, newArr);
-                    if (shift[0] != 0) {
-                        var ctx = buildShiftContext();
-                        if (shift[0] == 1) { ArrayDiffUtil.applyShiftLeft(ctx, key, oldArr, newArr, shift[1]); return; }
-                        if (shift[0] == 2) { ArrayDiffUtil.applyShiftRight(ctx, key, oldArr, newArr, shift[1]); return; }
-                    }
-                }
-                previousArrays.put(key, new ArrayList<>(newArr));
-            }
-
-            Map<String, Object> flattened = Flatten.flatten(key, value);
-            Set<String> newKeys = flattened.keySet();
-            Set<String> oldKeys = flattenedKeys.get(key);
-            if (oldKeys != null) {
-                for (String oldPath : oldKeys) {
-                    if (!newKeys.contains(oldPath)) {
-                        if (!ArrayDiffUtil.isArrayIndexKey(key, oldPath)) clearLeaf(oldPath);
-                    }
-                }
-            }
-            flattenedKeys.put(key, new HashSet<>(newKeys));
-            for (var entry : flattened.entrySet()) {
-                setLeaf(entry.getKey(), entry.getValue());
-            }
-            return;
-        }
-        setLeaf(key, value);
+        FlatStateHelper.set(key, value, flattenedKeys, previousArrays,
+                this::buildShiftContext, this::setLeaf, this::clearLeaf, true);
     }
 
     private ArrayDiffUtil.ShiftContext buildShiftContext() {

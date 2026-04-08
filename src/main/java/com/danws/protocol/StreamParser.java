@@ -8,7 +8,7 @@ import static com.danws.protocol.DLE.*;
 public class StreamParser {
     private enum State { IDLE, AFTER_DLE, IN_FRAME, IN_FRAME_AFTER_DLE }
 
-    private static final int INITIAL_CAPACITY = 256;
+    private static final int INITIAL_CAPACITY = 4096;
     private static final int DEFAULT_MAX_BUFFER = 1_048_576; // 1MB
 
     private State state = State.IDLE;
@@ -132,7 +132,7 @@ public class StreamParser {
                 state = State.IDLE;
                 return;
             }
-            buffer = Arrays.copyOf(buffer, buffer.length * 2);
+            buffer = Arrays.copyOf(buffer, (int)(buffer.length * 1.5));
         }
         buffer[bufferLen++] = b;
     }

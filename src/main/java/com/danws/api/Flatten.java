@@ -37,14 +37,17 @@ public final class Flatten {
             throw new DanWSException("FLATTEN_DEPTH_EXCEEDED", "Auto-flatten depth limit exceeded (max " + MAX_DEPTH + ") at path \"" + prefix + "\"");
         }
 
+        // Pre-compute prefix + "." once per recursion level to avoid repeated concatenation
+        String childPrefix = prefix + ".";
+
         if (value instanceof List<?> list) {
             if (seen.contains(list)) {
                 throw new DanWSException("CIRCULAR_REFERENCE", "Circular reference detected at path \"" + prefix + "\"");
             }
             seen.add(list);
-            result.put(prefix + ".length", list.size());
+            result.put(childPrefix + "length", list.size());
             for (int i = 0; i < list.size(); i++) {
-                String childPath = prefix + "." + i;
+                String childPath = childPrefix + i;
                 Object child = list.get(i);
                 if (child instanceof Map || child instanceof List) {
                     flattenRecursive(childPath, child, depth + 1, seen, result);
@@ -61,7 +64,7 @@ public final class Flatten {
             }
             seen.add(map);
             for (var entry : ((Map<String, Object>) map).entrySet()) {
-                String childPath = prefix + "." + entry.getKey();
+                String childPath = childPrefix + entry.getKey();
                 Object child = entry.getValue();
                 if (child instanceof Map || child instanceof List) {
                     flattenRecursive(childPath, child, depth + 1, seen, result);

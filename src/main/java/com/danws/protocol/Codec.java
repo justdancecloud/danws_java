@@ -21,29 +21,58 @@ public final class Codec {
             rawPayload = Serializer.serialize(frame.dataType(), frame.payload());
         }
 
-        byte[] rawBody = new byte[6 + rawPayload.length];
-        rawBody[0] = (byte) frame.frameType().code();
-        rawBody[1] = (byte) ((frame.keyId() >>> 24) & 0xFF);
-        rawBody[2] = (byte) ((frame.keyId() >>> 16) & 0xFF);
-        rawBody[3] = (byte) ((frame.keyId() >>> 8) & 0xFF);
-        rawBody[4] = (byte) (frame.keyId() & 0xFF);
-        rawBody[5] = (byte) frame.dataType().code();
-        System.arraycopy(rawPayload, 0, rawBody, 6, rawPayload.length);
+        // Count DLE bytes in the 6-byte header + payload to calculate escaped size
+        byte headerFrameType = (byte) frame.frameType().code();
+        byte h1 = (byte) ((frame.keyId() >>> 24) & 0xFF);
+        byte h2 = (byte) ((frame.keyId() >>> 16) & 0xFF);
+        byte h3 = (byte) ((frame.keyId() >>> 8) & 0xFF);
+        byte h4 = (byte) (frame.keyId() & 0xFF);
+        byte headerDataType = (byte) frame.dataType().code();
 
-        byte[] escapedBody = DLE.encode(rawBody);
+        int dleCount = 0;
+        if (headerFrameType == DLE_BYTE) dleCount++;
+        if (h1 == DLE_BYTE) dleCount++;
+        if (h2 == DLE_BYTE) dleCount++;
+        if (h3 == DLE_BYTE) dleCount++;
+        if (h4 == DLE_BYTE) dleCount++;
+        if (headerDataType == DLE_BYTE) dleCount++;
+        for (byte b : rawPayload) {
+            if (b == DLE_BYTE) dleCount++;
+        }
 
-        byte[] result = new byte[2 + escapedBody.length + 2];
+        // Allocate single result array: DLE STX + escaped body + DLE ETX
+        int bodyLen = 6 + rawPayload.length;
+        byte[] result = new byte[2 + bodyLen + dleCount + 2];
         result[0] = DLE_BYTE;
         result[1] = STX;
-        System.arraycopy(escapedBody, 0, result, 2, escapedBody.length);
-        result[result.length - 2] = DLE_BYTE;
-        result[result.length - 1] = ETX;
+
+        int pos = 2;
+        // Write header bytes with inline DLE escaping
+        pos = writeDleEscaped(result, pos, headerFrameType);
+        pos = writeDleEscaped(result, pos, h1);
+        pos = writeDleEscaped(result, pos, h2);
+        pos = writeDleEscaped(result, pos, h3);
+        pos = writeDleEscaped(result, pos, h4);
+        pos = writeDleEscaped(result, pos, headerDataType);
+        // Write payload with inline DLE escaping
+        for (byte b : rawPayload) {
+            pos = writeDleEscaped(result, pos, b);
+        }
+
+        result[pos] = DLE_BYTE;
+        result[pos + 1] = ETX;
 
         return result;
     }
 
+    private static int writeDleEscaped(byte[] out, int pos, byte b) {
+        out[pos++] = b;
+        if (b == DLE_BYTE) out[pos++] = DLE_BYTE;
+        return pos;
+    }
+
     public static byte[] encodeBatch(List<Frame> frames) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream out = new ByteArrayOutputStream(frames.size() * 16);
         for (Frame f : frames) {
             byte[] encoded = encode(f);
             out.write(encoded, 0, encoded.length);

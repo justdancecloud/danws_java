@@ -43,43 +43,16 @@ public class TopicPayload {
     }
 
     public void set(String key, Object value) {
-        if (Flatten.shouldFlatten(value)) {
-            // Array shift detection for List values
-            if (value instanceof List<?> newArr) {
-                List<Object> oldArr = previousArrays.get(key);
-                if (oldArr != null && !oldArr.isEmpty() && !newArr.isEmpty() && ArrayDiffUtil.isPrimitiveArray(newArr)) {
-                    int[] shift = ArrayDiffUtil.detectShift(oldArr, newArr);
-                    if (shift[0] != 0) {
-                        var ctx = buildShiftContext();
-                        if (shift[0] == 1) { ArrayDiffUtil.applyShiftLeft(ctx, key, oldArr, newArr, shift[1]); return; }
-                        if (shift[0] == 2) { ArrayDiffUtil.applyShiftRight(ctx, key, oldArr, newArr, shift[1]); return; }
-                    }
-                }
-                previousArrays.put(key, new ArrayList<>(newArr));
-            }
+        FlatStateHelper.set(key, value, flattenedKeys, previousArrays,
+                this::buildShiftContext, this::setLeafDirect, this::deleteFlatKey, true);
+    }
 
-            Map<String, Object> flattened = Flatten.flatten(key, value);
-            Set<String> newKeys = flattened.keySet();
-            Set<String> oldKeys = flattenedKeys.get(key);
-            if (oldKeys != null) {
-                for (String oldPath : oldKeys) {
-                    if (!newKeys.contains(oldPath)) {
-                        if (ArrayDiffUtil.isArrayIndexKey(key, oldPath)) continue; // stale array index — client uses .length
-                        Entry removed = entries.remove(oldPath);
-                        if (removed != null) {
-                            freeKeyId.accept(removed.keyId());
-                            if (enqueue != null) enqueue.accept(Frame.keyDelete(removed.keyId()));
-                        }
-                    }
-                }
-            }
-            flattenedKeys.put(key, new HashSet<>(newKeys));
-            for (var entry : flattened.entrySet()) {
-                setLeafInternal(entry.getKey(), entry.getValue());
-            }
-            return;
+    private void deleteFlatKey(String path) {
+        Entry removed = entries.remove(path);
+        if (removed != null) {
+            freeKeyId.accept(removed.keyId());
+            if (enqueue != null) enqueue.accept(Frame.keyDelete(removed.keyId()));
         }
-        setLeafDirect(key, value);
     }
 
     private ArrayDiffUtil.ShiftContext buildShiftContext() {
@@ -95,53 +68,6 @@ public class TopicPayload {
             public void setFlattenedKeys(String key, Set<String> keys) { flattenedKeys.put(key, keys); }
             public void setPreviousArray(String key, List<Object> arr) { previousArrays.put(key, arr); }
         };
-    }
-
-    /** Set leaf, return true if resync needed. */
-    private boolean setLeafInternal(String key, Object value) {
-        com.danws.state.KeyRegistry.validateKeyPath(key);
-        DataType newType = DataType.detect(value);
-        byte[] serialized = Serializer.serialize(newType, value);
-        if (maxValueSize > 0 && serialized.length > maxValueSize) {
-            throw new DanWSException("VALUE_TOO_LARGE", "Serialized value for \"" + key + "\" is " + serialized.length + " bytes, exceeds maxValueSize (" + maxValueSize + ")");
-        }
-
-        Entry existing = entries.get(key);
-
-        if (existing == null) {
-            int keyId = allocateKeyId.getAsInt();
-            entries.put(key, new Entry(keyId, newType, value));
-            if (enqueue != null) {
-                String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
-                enqueue.accept(Frame.keyRegistration(keyId, newType, wirePath));
-                enqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
-                enqueue.accept(Frame.value(keyId, newType, value));
-            }
-            return false;  // no resync needed — sent incrementally
-        }
-
-        if (existing.type() != newType) {
-            // Type changed — delete old + re-register
-            freeKeyId.accept(existing.keyId());
-            if (enqueue != null) enqueue.accept(Frame.keyDelete(existing.keyId()));
-            int keyId = allocateKeyId.getAsInt();
-            entries.put(key, new Entry(keyId, newType, value));
-            if (enqueue != null) {
-                String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
-                enqueue.accept(Frame.keyRegistration(keyId, newType, wirePath));
-                enqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
-                enqueue.accept(Frame.value(keyId, newType, value));
-            }
-            return false;
-        }
-
-        if (Objects.equals(existing.value(), value)) return false;
-
-        entries.put(key, new Entry(existing.keyId(), existing.type(), value));
-        if (enqueue != null) {
-            enqueue.accept(Frame.value(existing.keyId(), existing.type(), value));
-        }
-        return false;
     }
 
     private void setLeafDirect(String key, Object value) {
