@@ -6,6 +6,8 @@ import com.danws.state.KeyRegistry;
 import io.netty.channel.EventLoop;
 
 import java.util.*;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -48,6 +50,9 @@ public class DanWebSocketSession {
     private EventLoop eventLoop;
     private BiConsumer<String, Exception> debug;
     private int maxValueSize = 65_536;
+
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final ThreadLocal<List<Runnable>> deferredActions = ThreadLocal.withInitial(ArrayList::new);
 
     public DanWebSocketSession(String clientUuid) {
         this.id = clientUuid;
@@ -97,33 +102,57 @@ public class DanWebSocketSession {
         if (!sessionBound) {
             throw new DanWSException("INVALID_MODE", "session.set() is only available in topic modes.");
         }
-        FlatStateHelper.set(key, value, flattenedKeys, previousArrays,
-                this::buildShiftContext, this::setLeaf, this::deleteSessionKey, false);
+        List<Runnable> deferred = deferredActions.get();
+        deferred.clear();
+        rwLock.writeLock().lock();
+        try {
+            FlatStateHelper.set(key, value, flattenedKeys, previousArrays,
+                    this::buildShiftContext, this::setLeaf, this::deleteSessionKey, false);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+        for (Runnable action : deferred) {
+            action.run();
+        }
+        deferred.clear();
     }
 
     private void deleteSessionKey(String path) {
+        // Called while write lock is held
+        List<Runnable> deferred = deferredActions.get();
         KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(path);
         if (entry != null) {
             sessionRegistry.remove(path);
             sessionStore.remove(entry.keyId());
             if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
-            if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(entry.keyId()));
+            Consumer<Frame> enq = sessionEnqueue;
+            if (enq != null) {
+                Frame deleteFrame = Frame.keyDelete(entry.keyId());
+                deferred.add(() -> enq.accept(deleteFrame));
+            }
         }
     }
 
     private ArrayDiffUtil.ShiftContext buildShiftContext() {
+        // Called while write lock is held
+        List<Runnable> deferred = deferredActions.get();
         return new ArrayDiffUtil.ShiftContext() {
             public int getKeyId(String key) { var e = sessionRegistry.getByPath(key); return e != null ? e.keyId() : -1; }
             public DataType getType(String key) { var e = sessionRegistry.getByPath(key); return e != null ? e.type() : null; }
             public void setStoreValue(String key, Object value) { var e = sessionRegistry.getByPath(key); if (e != null) sessionStore.put(e.keyId(), value); }
             public void setLeaf(String key, Object value) { DanWebSocketSession.this.setLeaf(key, value); }
-            public void enqueue(Frame frame) { if (sessionEnqueue != null) sessionEnqueue.accept(frame); }
+            public void enqueue(Frame frame) {
+                Consumer<Frame> enq = sessionEnqueue;
+                if (enq != null) deferred.add(() -> enq.accept(frame));
+            }
             public void setFlattenedKeys(String key, Set<String> keys) { flattenedKeys.put(key, keys); }
             public void setPreviousArray(String key, List<Object> arr) { previousArrays.put(key, arr); }
         };
     }
 
     private void setLeaf(String key, Object value) {
+        // Called while write lock is held
+        List<Runnable> deferred = deferredActions.get();
         KeyRegistry.validateKeyPath(key);
         DataType newType = DataType.detect(value);
         byte[] serialized = Serializer.serialize(newType, value);
@@ -139,9 +168,14 @@ public class DanWebSocketSession {
             sessionStore.put(keyId, value);
             Consumer<Frame> enq = sessionEnqueue;
             if (enq != null) {
-                enq.accept(Frame.keyRegistration(keyId, newType, key));
-                enq.accept(Frame.signal(FrameType.SERVER_SYNC));
-                enq.accept(Frame.value(keyId, newType, value));
+                Frame regFrame = Frame.keyRegistration(keyId, newType, key);
+                Frame syncFrame = Frame.signal(FrameType.SERVER_SYNC);
+                Frame valFrame = Frame.value(keyId, newType, value);
+                deferred.add(() -> {
+                    enq.accept(regFrame);
+                    enq.accept(syncFrame);
+                    enq.accept(valFrame);
+                });
             }
             return;
         }
@@ -150,15 +184,23 @@ public class DanWebSocketSession {
             sessionRegistry.remove(key);
             sessionStore.remove(existing.keyId());
             if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(existing.keyId());
-            if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(existing.keyId()));
+            Consumer<Frame> enq = sessionEnqueue;
+            if (enq != null) {
+                Frame deleteFrame = Frame.keyDelete(existing.keyId());
+                deferred.add(() -> enq.accept(deleteFrame));
+            }
             int keyId = allocateKeyId();
             sessionRegistry.registerOne(keyId, key, newType);
             sessionStore.put(keyId, value);
-            Consumer<Frame> enq = sessionEnqueue;
             if (enq != null) {
-                enq.accept(Frame.keyRegistration(keyId, newType, key));
-                enq.accept(Frame.signal(FrameType.SERVER_SYNC));
-                enq.accept(Frame.value(keyId, newType, value));
+                Frame regFrame = Frame.keyRegistration(keyId, newType, key);
+                Frame syncFrame = Frame.signal(FrameType.SERVER_SYNC);
+                Frame valFrame = Frame.value(keyId, newType, value);
+                deferred.add(() -> {
+                    enq.accept(regFrame);
+                    enq.accept(syncFrame);
+                    enq.accept(valFrame);
+                });
             }
             return;
         }
@@ -166,59 +208,104 @@ public class DanWebSocketSession {
         if (Objects.equals(sessionStore.get(existing.keyId()), value)) return;
 
         sessionStore.put(existing.keyId(), value);
-        if (sessionEnqueue != null) {
-            sessionEnqueue.accept(Frame.value(existing.keyId(), existing.type(), value));
+        Consumer<Frame> enq = sessionEnqueue;
+        if (enq != null) {
+            Frame valFrame = Frame.value(existing.keyId(), existing.type(), value);
+            deferred.add(() -> enq.accept(valFrame));
         }
     }
 
     public Object get(String key) {
-        KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(key);
-        return entry != null ? sessionStore.get(entry.keyId()) : null;
+        rwLock.readLock().lock();
+        try {
+            KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(key);
+            if (entry == null) return null;
+            Object val = sessionStore.get(entry.keyId());
+            return DeepCopy.copy(val);
+        } finally {
+            rwLock.readLock().unlock();
+        }
     }
 
     public List<String> keys() {
-        return sessionRegistry.paths();
+        rwLock.readLock().lock();
+        try {
+            return sessionRegistry.paths(); // paths() already returns a new ArrayList copy
+        } finally {
+            rwLock.readLock().unlock();
+        }
     }
 
     public void clearKey(String key) {
         if (!sessionBound) return;
-        Set<String> flatKeys = flattenedKeys.get(key);
-        if (flatKeys != null) {
-            for (String path : flatKeys) {
-                KeyRegistry.KeyEntry e = sessionRegistry.getByPath(path);
-                if (e != null) {
-                    sessionRegistry.remove(path);
-                    sessionStore.remove(e.keyId());
-                    if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(e.keyId());
-                    if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(e.keyId()));
+        List<Runnable> deferred = deferredActions.get();
+        deferred.clear();
+        rwLock.writeLock().lock();
+        try {
+            Set<String> flatKeys = flattenedKeys.get(key);
+            if (flatKeys != null) {
+                for (String path : flatKeys) {
+                    KeyRegistry.KeyEntry e = sessionRegistry.getByPath(path);
+                    if (e != null) {
+                        sessionRegistry.remove(path);
+                        sessionStore.remove(e.keyId());
+                        if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(e.keyId());
+                        Consumer<Frame> enq = sessionEnqueue;
+                        if (enq != null) {
+                            Frame deleteFrame = Frame.keyDelete(e.keyId());
+                            deferred.add(() -> enq.accept(deleteFrame));
+                        }
+                    }
+                }
+                flattenedKeys.remove(key);
+                previousArrays.remove(key);
+            } else {
+                KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(key);
+                if (entry != null) {
+                    sessionRegistry.remove(key);
+                    sessionStore.remove(entry.keyId());
+                    if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
+                    previousArrays.remove(key);
+                    Consumer<Frame> enq = sessionEnqueue;
+                    if (enq != null) {
+                        Frame deleteFrame = Frame.keyDelete(entry.keyId());
+                        deferred.add(() -> enq.accept(deleteFrame));
+                    }
                 }
             }
-            flattenedKeys.remove(key);
-            previousArrays.remove(key);
-        } else {
-            KeyRegistry.KeyEntry entry = sessionRegistry.getByPath(key);
-            if (entry != null) {
-                sessionRegistry.remove(key);
-                sessionStore.remove(entry.keyId());
-                if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
-                previousArrays.remove(key);
-                if (sessionEnqueue != null) sessionEnqueue.accept(Frame.keyDelete(entry.keyId()));
-            }
+        } finally {
+            rwLock.writeLock().unlock();
         }
+        for (Runnable action : deferred) {
+            action.run();
+        }
+        deferred.clear();
     }
 
     public void clearKey() {
         if (!sessionBound) return;
-        if (sessionRegistry.size() > 0) {
-            for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
-                if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
+        List<Runnable> deferred = deferredActions.get();
+        deferred.clear();
+        rwLock.writeLock().lock();
+        try {
+            if (sessionRegistry.size() > 0) {
+                for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
+                    if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
+                }
+                sessionRegistry.clear();
+                sessionStore.clear();
+                flattenedKeys.clear();
+                previousArrays.clear();
+                // Collect resync frames under the lock, then send outside
+                deferred.add(() -> triggerSessionResyncUnlocked());
             }
-            sessionRegistry.clear();
-            sessionStore.clear();
-            flattenedKeys.clear();
-            previousArrays.clear();
-            triggerSessionResync();
+        } finally {
+            rwLock.writeLock().unlock();
         }
+        for (Runnable action : deferred) {
+            action.run();
+        }
+        deferred.clear();
     }
 
     // ---- Topic API (backward compat) ----
@@ -349,7 +436,7 @@ public class DanWebSocketSession {
         if (wireIndex >= topicIndex) topicIndex = wireIndex + 1;
         TopicPayload payload = new TopicPayload(wireIndex, this::allocateKeyId, id -> { if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(id); }, maxValueSize);
         if (sessionEnqueue != null) {
-            payload.bind(sessionEnqueue, this::triggerSessionResync);
+            payload.bind(sessionEnqueue, this::triggerSessionResyncUnlocked);
         }
         TopicHandle handle = new TopicHandle(name, params, payload, this, eventLoop, (msg, err) -> log(msg, err));
         topicHandles.put(name, handle);
@@ -363,7 +450,7 @@ public class DanWebSocketSession {
             handle.dispose();
             topicHandles.remove(name);
             topics.remove(name);
-            triggerSessionResync();
+            triggerSessionResyncUnlocked();
         }
     }
 
@@ -393,14 +480,25 @@ public class DanWebSocketSession {
         }
 
         // Search in session-level flat state (topic mode) — O(1) via KeyRegistry HashMap
-        KeyRegistry.KeyEntry sessionEntry = sessionRegistry.getByKeyId(keyId);
-        if (sessionEntry != null) {
-            enqueueFrame.accept(Frame.keyRegistration(sessionEntry.keyId(), sessionEntry.type(), sessionEntry.path()));
-            enqueueFrame.accept(Frame.signal(FrameType.SERVER_SYNC));
-            Object val = sessionStore.get(sessionEntry.keyId());
-            if (val != null) {
-                enqueueFrame.accept(Frame.value(sessionEntry.keyId(), sessionEntry.type(), val));
+        // Collect frames under read lock, send outside
+        List<Frame> sessionFrames = null;
+        rwLock.readLock().lock();
+        try {
+            KeyRegistry.KeyEntry sessionEntry = sessionRegistry.getByKeyId(keyId);
+            if (sessionEntry != null) {
+                sessionFrames = new ArrayList<>(3);
+                sessionFrames.add(Frame.keyRegistration(sessionEntry.keyId(), sessionEntry.type(), sessionEntry.path()));
+                sessionFrames.add(Frame.signal(FrameType.SERVER_SYNC));
+                Object val = sessionStore.get(sessionEntry.keyId());
+                if (val != null) {
+                    sessionFrames.add(Frame.value(sessionEntry.keyId(), sessionEntry.type(), val));
+                }
             }
+        } finally {
+            rwLock.readLock().unlock();
+        }
+        if (sessionFrames != null) {
+            for (Frame f : sessionFrames) enqueueFrame.accept(f);
             return;
         }
 
@@ -416,22 +514,38 @@ public class DanWebSocketSession {
         }
     }
 
-    private void triggerSessionResync() {
+    /**
+     * Trigger a full session resync. This method is called outside the write lock
+     * (or from contexts that don't hold the session rwLock), so it acquires its own
+     * read lock for reading session state.
+     */
+    private void triggerSessionResyncUnlocked() {
         if (sessionEnqueue == null) return;
 
         sessionEnqueue.accept(Frame.signal(FrameType.SERVER_RESET));
 
-        // Single-pass: collect session key+value frames together
-        List<Frame> sessionValueFrames = new ArrayList<>();
-        for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
-            sessionEnqueue.accept(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
-            Object val = sessionStore.get(entry.keyId());
-            if (val != null) {
-                sessionValueFrames.add(Frame.value(entry.keyId(), entry.type(), val));
+        // Collect session key+value frames under read lock
+        List<Frame> sessionKeyFrames;
+        List<Frame> sessionValueFrames;
+        rwLock.readLock().lock();
+        try {
+            sessionKeyFrames = new ArrayList<>();
+            sessionValueFrames = new ArrayList<>();
+            for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
+                sessionKeyFrames.add(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
+                Object val = sessionStore.get(entry.keyId());
+                if (val != null) {
+                    sessionValueFrames.add(Frame.value(entry.keyId(), entry.type(), val));
+                }
             }
+        } finally {
+            rwLock.readLock().unlock();
         }
 
-        // Single-pass: collect topic key+value frames together
+        // Send session key frames
+        for (Frame f : sessionKeyFrames) sessionEnqueue.accept(f);
+
+        // Collect and send topic frames (TopicPayload has its own locking)
         List<List<Frame>> topicValueFrameLists = new ArrayList<>();
         for (TopicHandle h : topicHandles.values()) {
             TopicPayload.AllFrames allFrames = h.payload().buildAllFrames();
@@ -442,7 +556,7 @@ public class DanWebSocketSession {
         sessionEnqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
 
         // Emit all value frames (session then topics)
-        sessionValueFrames.forEach(sessionEnqueue);
+        for (Frame f : sessionValueFrames) sessionEnqueue.accept(f);
         for (List<Frame> valueFrames : topicValueFrameLists) {
             valueFrames.forEach(sessionEnqueue);
         }
