@@ -377,7 +377,8 @@ public class DanWebSocketSession {
     private void handleKeyRequest(int keyId) {
         if (enqueueFrame == null) return;
 
-        // Search in TX providers (broadcast/principal mode)
+        // Search in TX providers (broadcast/principal mode) — kept as linear scan
+        // because the provider interface is Supplier<List<Frame>> and frames are cached
         if (txKeyFrameProvider != null && txValueFrameProvider != null) {
             for (Frame kf : txKeyFrameProvider.get()) {
                 if (kf.keyId() == keyId && kf.frameType() == FrameType.SERVER_KEY_REGISTRATION) {
@@ -391,11 +392,8 @@ public class DanWebSocketSession {
             }
         }
 
-        // Search in session-level flat state (topic mode)
-        KeyRegistry.KeyEntry sessionEntry = null;
-        for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
-            if (entry.keyId() == keyId) { sessionEntry = entry; break; }
-        }
+        // Search in session-level flat state (topic mode) — O(1) via KeyRegistry HashMap
+        KeyRegistry.KeyEntry sessionEntry = sessionRegistry.getByKeyId(keyId);
         if (sessionEntry != null) {
             enqueueFrame.accept(Frame.keyRegistration(sessionEntry.keyId(), sessionEntry.type(), sessionEntry.path()));
             enqueueFrame.accept(Frame.signal(FrameType.SERVER_SYNC));
@@ -406,17 +404,14 @@ public class DanWebSocketSession {
             return;
         }
 
-        // Search in topic payloads
+        // Search in topic payloads — O(1) per topic via reverse keyId index
         for (TopicHandle handle : topicHandles.values()) {
-            for (Frame kf : handle.payload().buildKeyFrames()) {
-                if (kf.keyId() == keyId) {
-                    enqueueFrame.accept(kf);
-                    enqueueFrame.accept(Frame.signal(FrameType.SERVER_SYNC));
-                    for (Frame vf : handle.payload().buildValueFrames()) {
-                        if (vf.keyId() == keyId) { enqueueFrame.accept(vf); break; }
-                    }
-                    return;
-                }
+            Frame[] frames = handle.payload().getFramesByKeyId(keyId);
+            if (frames != null) {
+                enqueueFrame.accept(frames[0]); // key registration frame
+                enqueueFrame.accept(Frame.signal(FrameType.SERVER_SYNC));
+                if (frames[1] != null) enqueueFrame.accept(frames[1]); // value frame
+                return;
             }
         }
     }
@@ -426,27 +421,30 @@ public class DanWebSocketSession {
 
         sessionEnqueue.accept(Frame.signal(FrameType.SERVER_RESET));
 
-        // Flat session keys
+        // Single-pass: collect session key+value frames together
+        List<Frame> sessionValueFrames = new ArrayList<>();
         for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
             sessionEnqueue.accept(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
+            Object val = sessionStore.get(entry.keyId());
+            if (val != null) {
+                sessionValueFrames.add(Frame.value(entry.keyId(), entry.type(), val));
+            }
         }
-        // Topic payload keys
+
+        // Single-pass: collect topic key+value frames together
+        List<List<Frame>> topicValueFrameLists = new ArrayList<>();
         for (TopicHandle h : topicHandles.values()) {
-            h.payload().buildKeyFrames().forEach(sessionEnqueue);
+            TopicPayload.AllFrames allFrames = h.payload().buildAllFrames();
+            allFrames.keyFrames().forEach(sessionEnqueue);
+            topicValueFrameLists.add(allFrames.valueFrames());
         }
 
         sessionEnqueue.accept(Frame.signal(FrameType.SERVER_SYNC));
 
-        // Flat session values
-        for (KeyRegistry.KeyEntry entry : sessionRegistry.entries()) {
-            Object val = sessionStore.get(entry.keyId());
-            if (val != null) {
-                sessionEnqueue.accept(Frame.value(entry.keyId(), entry.type(), val));
-            }
-        }
-        // Topic payload values
-        for (TopicHandle h : topicHandles.values()) {
-            h.payload().buildValueFrames().forEach(sessionEnqueue);
+        // Emit all value frames (session then topics)
+        sessionValueFrames.forEach(sessionEnqueue);
+        for (List<Frame> valueFrames : topicValueFrameLists) {
+            valueFrames.forEach(sessionEnqueue);
         }
     }
 }

@@ -199,6 +199,37 @@ public class PrincipalTX {
         return frames;
     }
 
+    /** Single-pass build of both key and value frames, avoiding double iteration of the registry. */
+    record AllFrames(List<Frame> keyFrames, List<Frame> valueFrames) {}
+
+    AllFrames buildAllFrames() {
+        List<Frame> keyFrames = new ArrayList<>();
+        List<Frame> valueFrames = new ArrayList<>();
+        for (KeyEntry entry : registry.entries()) {
+            keyFrames.add(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
+            Object val = store.get(entry.keyId());
+            if (val != null) {
+                valueFrames.add(Frame.value(entry.keyId(), entry.type(), val));
+            }
+        }
+        // Always include ServerSync so client transitions from synchronizing to ready
+        keyFrames.add(Frame.signal(FrameType.SERVER_SYNC));
+        return new AllFrames(keyFrames, valueFrames);
+    }
+
+    /**
+     * O(1) lookup for a specific keyId. Returns key registration + value frames,
+     * or null if not found. Uses KeyRegistry's HashMap-backed getByKeyId.
+     */
+    Frame[] getFramesByKeyId(int keyId) {
+        KeyEntry entry = registry.getByKeyId(keyId);
+        if (entry == null) return null;
+        Frame keyFrame = Frame.keyRegistration(entry.keyId(), entry.type(), entry.path());
+        Object val = store.get(entry.keyId());
+        Frame valueFrame = val != null ? Frame.value(entry.keyId(), entry.type(), val) : null;
+        return new Frame[]{ keyFrame, valueFrame };
+    }
+
     private void triggerResync() {
         cachedKeyFrames = null;
         if (onKeysChanged != null) onKeysChanged.run();

@@ -12,6 +12,7 @@ public class TopicPayload {
     private record Entry(int keyId, DataType type, Object value) {}
 
     private final Map<String, Entry> entries = new LinkedHashMap<>();
+    private final Map<Integer, String> keyIdToPath = new HashMap<>();
     private final int index;
     private final IntSupplier allocateKeyId;
     private final IntConsumer freeKeyId;
@@ -50,6 +51,7 @@ public class TopicPayload {
     private void deleteFlatKey(String path) {
         Entry removed = entries.remove(path);
         if (removed != null) {
+            keyIdToPath.remove(removed.keyId());
             freeKeyId.accept(removed.keyId());
             if (enqueue != null) enqueue.accept(Frame.keyDelete(removed.keyId()));
         }
@@ -83,6 +85,7 @@ public class TopicPayload {
         if (existing == null) {
             int keyId = allocateKeyId.getAsInt();
             entries.put(key, new Entry(keyId, newType, value));
+            keyIdToPath.put(keyId, key);
             if (enqueue != null) {
                 String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
                 enqueue.accept(Frame.keyRegistration(keyId, newType, wirePath));
@@ -94,10 +97,12 @@ public class TopicPayload {
 
         if (existing.type() != newType) {
             // Type changed — delete old + re-register
+            keyIdToPath.remove(existing.keyId());
             freeKeyId.accept(existing.keyId());
             if (enqueue != null) enqueue.accept(Frame.keyDelete(existing.keyId()));
             int keyId = allocateKeyId.getAsInt();
             entries.put(key, new Entry(keyId, newType, value));
+            keyIdToPath.put(keyId, key);
             if (enqueue != null) {
                 String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
                 enqueue.accept(Frame.keyRegistration(keyId, newType, wirePath));
@@ -136,6 +141,7 @@ public class TopicPayload {
                 Entry e = entries.remove(path);
                 wirePathCache.remove(path);
                 if (e != null) {
+                    keyIdToPath.remove(e.keyId());
                     freeKeyId.accept(e.keyId());
                     if (enqueue != null) enqueue.accept(Frame.keyDelete(e.keyId()));
                 }
@@ -145,6 +151,7 @@ public class TopicPayload {
         } else {
             Entry e = entries.remove(key);
             if (e != null) {
+                keyIdToPath.remove(e.keyId());
                 wirePathCache.remove(key);
                 previousArrays.remove(key);
                 freeKeyId.accept(e.keyId());
@@ -159,6 +166,7 @@ public class TopicPayload {
                 freeKeyId.accept(e.keyId());
             }
             entries.clear();
+            keyIdToPath.clear();
             flattenedKeys.clear();
             wirePathCache.clear();
             previousArrays.clear();
@@ -183,6 +191,39 @@ public class TopicPayload {
             }
         }
         return frames;
+    }
+
+    /** Single-pass build of both key and value frames, avoiding double iteration. */
+    record AllFrames(List<Frame> keyFrames, List<Frame> valueFrames) {}
+
+    AllFrames buildAllFrames() {
+        List<Frame> keyFrames = new ArrayList<>();
+        List<Frame> valueFrames = new ArrayList<>();
+        for (var e : entries.entrySet()) {
+            String wirePath = wirePathCache.computeIfAbsent(e.getKey(), k -> "t." + index + "." + k);
+            keyFrames.add(Frame.keyRegistration(e.getValue().keyId(), e.getValue().type(), wirePath));
+            if (e.getValue().value() != null) {
+                valueFrames.add(Frame.value(e.getValue().keyId(), e.getValue().type(), e.getValue().value()));
+            }
+        }
+        return new AllFrames(keyFrames, valueFrames);
+    }
+
+    /**
+     * O(1) lookup: returns key registration + value frames for a specific keyId,
+     * or null if not found. Uses the keyIdToPath reverse index.
+     */
+    Frame[] getFramesByKeyId(int keyId) {
+        String path = keyIdToPath.get(keyId);
+        if (path == null) return null;
+        Entry e = entries.get(path);
+        if (e == null) return null;
+        String wirePath = wirePathCache.computeIfAbsent(path, k -> "t." + index + "." + k);
+        Frame keyFrame = Frame.keyRegistration(e.keyId(), e.type(), wirePath);
+        Frame valueFrame = e.value() != null
+                ? Frame.value(e.keyId(), e.type(), e.value())
+                : null;
+        return new Frame[]{ keyFrame, valueFrame };
     }
 
     int index() { return index; }

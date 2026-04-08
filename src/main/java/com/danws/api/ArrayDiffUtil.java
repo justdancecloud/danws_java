@@ -13,12 +13,36 @@ final class ArrayDiffUtil {
 
     private ArrayDiffUtil() {}
 
-    /** Size limit: skip shift detection for very large arrays (O(n^2) worst case). */
+    /** Size limit: skip shift detection for very large arrays. */
     private static final int SHIFT_DETECTION_SIZE_LIMIT = 1000;
+
+    /** Max positions to search for shift — caps worst case to O(MAX_SHIFT_SEARCH * n). */
+    private static final int MAX_SHIFT_SEARCH = 50;
+
+    /** Number of leading elements sampled for the rolling hash pre-filter. */
+    private static final int HASH_SAMPLE = 8;
+
+    /**
+     * Quick hash of the first {@code len} elements starting at {@code start}.
+     * Used as a cheap pre-filter so full element-by-element comparison is only
+     * performed when the hash matches the target window.
+     */
+    private static int quickHash(List<?> arr, int start, int len) {
+        int h = 0;
+        int end = Math.min(start + len, arr.size());
+        for (int i = start; i < end; i++) {
+            h = h * 31 + Objects.hashCode(arr.get(i));
+        }
+        return h;
+    }
 
     /**
      * Detect left or right shift between old and new arrays.
      * Returns int[2]: [direction, count] where direction: 0=none, 1=left, 2=right.
+     *
+     * Search is bounded to {@link #MAX_SHIFT_SEARCH} positions, giving O(n) worst case.
+     * A rolling hash pre-filter on the first {@link #HASH_SAMPLE} elements avoids
+     * full comparisons at non-matching positions.
      */
     static int[] detectShift(List<Object> oldArr, List<?> newArr) {
         int oldLen = oldArr.size();
@@ -29,15 +53,20 @@ final class ArrayDiffUtil {
             return new int[]{0, 0};
         }
 
-        // Skip shift detection for large arrays to avoid O(n^2) worst case
+        // Skip shift detection for large arrays
         if (oldLen > SHIFT_DETECTION_SIZE_LIMIT || newLen > SHIFT_DETECTION_SIZE_LIMIT) {
             return new int[]{0, 0};
         }
 
         // 1. Left shift: find new[0] in oldArr → gives shift amount k
+        //    Pre-compute hash of newArr[0..HASH_SAMPLE) as the target to match.
+        int sampleLen = Math.min(HASH_SAMPLE, newLen);
+        int targetHashLeft = quickHash(newArr, 0, sampleLen);
         Object newFirst = newArr.get(0);
-        for (int k = 1; k < oldLen; k++) {
+        for (int k = 1; k < Math.min(oldLen, MAX_SHIFT_SEARCH + 1); k++) {
             if (!Objects.equals(oldArr.get(k), newFirst)) continue;
+            // Quick hash pre-filter: compare hash of oldArr[k..k+SAMPLE) with target
+            if (quickHash(oldArr, k, sampleLen) != targetHashLeft) continue;
             int matchLen = Math.min(oldLen - k, newLen);
             if (matchLen <= 0) continue;
             boolean match = true;
@@ -48,9 +77,14 @@ final class ArrayDiffUtil {
         }
 
         // 2. Right shift: find old[0] in newArr → gives shift amount k
+        //    Pre-compute hash of oldArr[0..HASH_SAMPLE) as the target to match.
+        int sampleLenRight = Math.min(HASH_SAMPLE, oldLen);
+        int targetHashRight = quickHash(oldArr, 0, sampleLenRight);
         Object oldFirst = oldArr.get(0);
-        for (int k = 1; k < newLen; k++) {
+        for (int k = 1; k < Math.min(newLen, MAX_SHIFT_SEARCH + 1); k++) {
             if (!Objects.equals(newArr.get(k), oldFirst)) continue;
+            // Quick hash pre-filter: compare hash of newArr[k..k+SAMPLE) with target
+            if (quickHash(newArr, k, sampleLenRight) != targetHashRight) continue;
             int matchLen = Math.min(oldLen, newLen - k);
             if (matchLen <= 0) continue;
             boolean match = true;
