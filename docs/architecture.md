@@ -250,6 +250,63 @@ schedulePrincipalEviction("alice", TTL)
         -> Principal data intact
 ```
 
+## Thread Safety Model
+
+The three core stateful classes -- `PrincipalTX`, `DanWebSocketSession`, and `TopicPayload` -- are protected by `ReentrantReadWriteLock` to allow safe concurrent access from arbitrary threads (e.g., REST controller threads, scheduled executors) alongside the Netty EventLoop.
+
+### Read-Write Lock
+
+```
+ReadLock  (shared)      WriteLock (exclusive)
+  get()                   set()
+  keys()                  clear()
+  multiple readers        single writer
+  concurrent OK           blocks all others
+```
+
+Read operations (`get()`, `keys()`) acquire the read lock. Multiple threads can hold the read lock simultaneously. Write operations (`set()`, `clear()`) acquire the write lock, which is exclusive -- it waits for all readers to finish and blocks new readers until the write completes.
+
+### Defensive Deep Copy
+
+All `get()` methods return values through `DeepCopy.copy()`:
+
+```
+DeepCopy.copy(val)
+    |
+    +- null / String / Number / Boolean  -> return as-is (immutable)
+    +- List   -> recursive copy -> Collections.unmodifiableList
+    +- Map    -> recursive copy -> Collections.unmodifiableMap
+    +- byte[] -> clone
+```
+
+This guarantees that user code cannot mutate the internal store through a returned reference. The returned collections are wrapped in unmodifiable wrappers, so any attempt to modify them throws `UnsupportedOperationException`.
+
+### Deferred Callback Pattern
+
+A critical design constraint: **callbacks must never run while holding a lock**. If a callback (e.g., `BulkQueue.enqueue()`) tried to acquire another lock, it could deadlock.
+
+The solution uses `ThreadLocal<List<Runnable>>`:
+
+```
+writeLock.lock()
+try {
+    // 1. Mutate state
+    store.put(keyId, value);
+    
+    // 2. Collect callbacks (do NOT execute yet)
+    deferred.add(() -> bulkQueue.enqueue(frame));
+    deferred.add(() -> session.notify());
+} finally {
+    writeLock.unlock();
+}
+
+// 3. Execute callbacks OUTSIDE the lock
+for (Runnable action : deferred) action.run();
+deferred.clear();
+```
+
+This pattern is applied consistently across `PrincipalTX`, `DanWebSocketSession`, and `TopicPayload`. The `ThreadLocal` ensures that each calling thread has its own deferred list with no contention.
+
 ## Key Classes
 
 ### FlatStateHelper

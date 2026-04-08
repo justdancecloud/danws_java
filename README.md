@@ -1065,6 +1065,58 @@ server.clear("temp.data");
 
 ---
 
+## Thread Safety
+
+dan-websocket uses `ReentrantReadWriteLock` on the three core stateful classes -- `PrincipalTX`, `DanWebSocketSession`, and `TopicPayload` -- to guarantee safe concurrent access from multiple threads.
+
+### Read-Write Lock Semantics
+
+- **Multiple concurrent readers** -- Any number of threads can call `get()`, `keys()`, etc. simultaneously without blocking each other.
+- **Exclusive writer** -- Mutation methods (`set()`, `clear()`) acquire the write lock, blocking all readers and other writers until complete.
+- This means reads never block reads, and writes only block for the duration of the state mutation itself.
+
+### Defensive Deep Copy
+
+All `get()` methods return **deep-copied, immutable data**:
+
+- `List` values are returned wrapped in `Collections.unmodifiableList`
+- `Map` values are returned wrapped in `Collections.unmodifiableMap`
+- `byte[]` values are cloned
+- Immutable types (`String`, `Number`, `Boolean`, `null`) are returned as-is
+
+This ensures that the caller cannot accidentally mutate the server's internal state. The `DeepCopy` utility class handles recursive copying of nested structures.
+
+### Deferred Callbacks (Deadlock Prevention)
+
+Callbacks (e.g., BulkQueue enqueue, session notifications) are **never invoked while holding a lock**. Instead, they are collected into a `ThreadLocal<List<Runnable>>` during the write-locked section and executed after the lock is released. This prevents deadlocks that would otherwise occur if a callback tried to acquire another lock.
+
+### Example: Safe Concurrent Access
+
+```java
+var server = new DanWebSocketServer(8080, Mode.PRINCIPAL);
+
+// Thread A: update state (acquires write lock)
+executor.submit(() -> {
+    server.principal("alice").set("score", 100);
+});
+
+// Thread B: read state concurrently (acquires read lock -- does not block other readers)
+executor.submit(() -> {
+    Object score = server.principal("alice").get("score");
+    // score is a deep copy -- safe to use without synchronization
+});
+
+// Thread C: also reading (runs concurrently with Thread B)
+executor.submit(() -> {
+    List<String> keys = server.principal("alice").keys();
+    // keys is an unmodifiable list -- safe to iterate
+});
+```
+
+No external synchronization is needed when calling dan-websocket APIs from multiple threads.
+
+---
+
 ## Performance
 
 dan-websocket is engineered for high throughput and low latency:

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1] - 2026-04-08
+### Added
+- ReentrantReadWriteLock on PrincipalTX, DanWebSocketSession, TopicPayload
+- Defensive deep copy on all get() methods (immutable return values)
+- DeepCopy utility class
+- ThreadLocal deferred action pattern for deadlock prevention
+
 ## [2.4.0] - 2026-04-08
 ### Added
 - VAR_INTEGER (0x0D): Zigzag + VarInt encoding for integers
