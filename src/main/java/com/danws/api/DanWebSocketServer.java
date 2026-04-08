@@ -36,6 +36,7 @@ public class DanWebSocketServer {
     private final String path;
     private final long maxMessageSize;
     private final int maxValueSize;
+    private final long principalEvictionTtl;
     private boolean authEnabled;
     private long authTimeout = 5000;
 
@@ -48,6 +49,7 @@ public class DanWebSocketServer {
     private final Map<String, InternalSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, InternalSession> tmpSessions = new ConcurrentHashMap<>();
     private final Map<ChannelId, String> chToUuid = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ScheduledFuture<?>> principalEvictionTimers = new ConcurrentHashMap<>();
 
     private final List<Consumer<DanWebSocketSession>> onConnection = new ArrayList<>();
     private final List<BiConsumer<String, String>> onAuthorize = new ArrayList<>();
@@ -69,12 +71,17 @@ public class DanWebSocketServer {
     }
 
     public DanWebSocketServer(int port, String path, Mode mode, long ttlMs, long flushIntervalMs, long maxMessageSize, int maxValueSize) {
+        this(port, path, mode, ttlMs, flushIntervalMs, maxMessageSize, maxValueSize, 300_000);
+    }
+
+    public DanWebSocketServer(int port, String path, Mode mode, long ttlMs, long flushIntervalMs, long maxMessageSize, int maxValueSize, long principalEvictionTtl) {
         this.mode = (mode == Mode.INDIVIDUAL) ? Mode.PRINCIPAL : mode;
         this.ttl = ttlMs;
         this.flushIntervalMs = flushIntervalMs;
         this.path = path;
         this.maxMessageSize = maxMessageSize;
         this.maxValueSize = maxValueSize;
+        this.principalEvictionTtl = principalEvictionTtl;
 
         try {
             ServerBootstrap b = new ServerBootstrap();
@@ -243,6 +250,8 @@ public class DanWebSocketServer {
         sessions.clear();
         tmpSessions.clear();
         principalIndex.clear();
+        for (ScheduledFuture<?> timer : principalEvictionTimers.values()) timer.cancel(false);
+        principalEvictionTimers.clear();
         try {
             if (serverChannel != null) serverChannel.close().sync();
             bossGroup.shutdownGracefully(0, 2000, TimeUnit.MILLISECONDS);
@@ -350,12 +359,23 @@ public class DanWebSocketServer {
         principalIndex.computeIfAbsent(principal, k -> ConcurrentHashMap.newKeySet()).add(s);
     }
 
-    private void removeFromPrincipalIndex(String principal, InternalSession s) {
+    /** Returns true when no active sessions remain for this principal. */
+    private boolean removeFromPrincipalIndex(String principal, InternalSession s) {
         Set<InternalSession> set = principalIndex.get(principal);
         if (set != null) {
             set.remove(s);
-            if (set.isEmpty()) principalIndex.remove(principal);
+            if (set.isEmpty()) {
+                principalIndex.remove(principal);
+                return true;
+            }
         }
+        return false;
+    }
+
+    /** Check if a principal still has active sessions (read-only, no mutation). */
+    public boolean hasActiveSessions(String principal) {
+        Set<InternalSession> set = principalIndex.get(principal);
+        return set != null && !set.isEmpty();
     }
 
     private Set<InternalSession> getPrincipalSessions(String name) {
@@ -464,6 +484,7 @@ public class DanWebSocketServer {
 
     private void activateSession(InternalSession internal, String principal) {
         String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : principal;
+        cancelPrincipalEviction(effective);
         addToPrincipalIndex(effective, internal);
         if (isTopicMode()) {
             internal.session.bindSessionTX(f -> internal.bulkQueue.enqueue(f));
@@ -587,13 +608,38 @@ public class DanWebSocketServer {
 
         String p = internal.session.principal();
         String effective = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : p;
-        if (effective != null) removeFromPrincipalIndex(effective, internal);
+        if (effective != null) {
+            boolean noSessions = removeFromPrincipalIndex(effective, internal);
+            if (noSessions) {
+                schedulePrincipalEviction(effective);
+            }
+        }
 
         if (internal.ttlFuture != null) { internal.ttlFuture.cancel(false); internal.ttlFuture = null; }
         internal.ttlFuture = workerGroup.next().schedule(() -> {
             sessions.remove(uuid);
             for (var cb : onSessionExpired) { try { cb.accept(internal.session); } catch (Exception e) { log("onSessionExpired callback error", e); } }
         }, ttl, TimeUnit.MILLISECONDS);
+    }
+
+    private void schedulePrincipalEviction(String principal) {
+        if (principalEvictionTtl <= 0) return; // disabled
+        long delay = principalEvictionTtl;
+        ScheduledFuture<?> future = workerGroup.next().schedule(() -> {
+            principalEvictionTimers.remove(principal);
+            // Double-check no sessions reconnected during eviction delay
+            if (hasActiveSessions(principal)) return;
+            log("Evicting principal \"" + principal + "\" data (no sessions for " + delay + "ms)", null);
+            principals.remove(principal);
+        }, delay, TimeUnit.MILLISECONDS);
+        principalEvictionTimers.put(principal, future);
+    }
+
+    private void cancelPrincipalEviction(String principal) {
+        ScheduledFuture<?> timer = principalEvictionTimers.remove(principal);
+        if (timer != null) {
+            timer.cancel(false);
+        }
     }
 
     private static void sendBytes(Channel ch, byte[] data) {
