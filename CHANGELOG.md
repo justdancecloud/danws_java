@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.4] - 2026-04-11
+### Removed
+- **`Mode.INDIVIDUAL`** — deleted. It was already silently aliased to `PRINCIPAL` at construction time; the enum entry was a misleading API surface. Use `Mode.PRINCIPAL` directly.
+
+### Added
+- **KeyId overflow guard**: `KeyRegistry.registerNew()` / `nextId()` now throws `KEY_ID_OVERFLOW` instead of silently wrapping past `Integer.MAX_VALUE`.
+- **`-Xlint:unchecked`** enabled alongside `-Xlint:deprecation` in `build.gradle` so any new unchecked/raw-type warnings surface during compilation.
+
 ## [2.4.3] - 2026-04-11
 ### Added
 - Automated release workflow (`.github/workflows/release.yml`) — on `v*` tag push, the workflow runs tests, builds signed artifacts, uploads to Maven Central via the Portal API, mirrors to GitHub Packages, and creates a GitHub Release with attached JARs + POM + signatures.
