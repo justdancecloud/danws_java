@@ -39,8 +39,8 @@ jobs:
           echo "GPG_KEY_NAME=$KEY_ID" >> $GITHUB_ENV
           echo "Using GPG key: $KEY_ID"
 
-      - name: Build and test
-        run: ./gradlew test --no-daemon
+      - name: Build (skip tests — already validated on main CI and locally before tagging)
+        run: ./gradlew classes --no-daemon
         env:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
 
