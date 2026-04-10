@@ -99,6 +99,18 @@ publishing {
             name = 'local'
             url = layout.buildDirectory.dir('repo')
         }
+
+        // GitHub Packages mirror — fills the "Packages" sidebar on the repo
+        // page. Credentials are read from GITHUB_ACTOR / GITHUB_TOKEN env vars
+        // (CI) or gpr.user / gpr.key gradle properties (local).
+        maven {
+            name = 'GitHubPackages'
+            url = uri('https://maven.pkg.github.com/justdancecloud/danws_java')
+            credentials {
+                username = System.getenv('GITHUB_ACTOR') ?: findProperty('gpr.user') ?: ''
+                password = System.getenv('GITHUB_TOKEN') ?: findProperty('gpr.key') ?: ''
+            }
+        }
     }
 }
 

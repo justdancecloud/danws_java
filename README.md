@@ -2,8 +2,12 @@
 
 > Lightweight binary protocol for real-time state synchronization -- **Server to Client**
 
-[![Maven Central](https://img.shields.io/maven-central/v/io.github.justdancecloud/dan-websocket)](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket)
-[![npm](https://img.shields.io/npm/v/dan-websocket)](https://www.npmjs.com/package/dan-websocket)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.justdancecloud/dan-websocket?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket)
+[![GitHub Packages](https://img.shields.io/github/v/release/justdancecloud/danws_java?label=GitHub%20Packages&color=blue)](https://github.com/justdancecloud/danws_java/packages)
+[![npm](https://img.shields.io/npm/v/dan-websocket?label=npm%20(TypeScript))](https://www.npmjs.com/package/dan-websocket)
+[![CI](https://github.com/justdancecloud/danws_java/actions/workflows/ci.yml/badge.svg)](https://github.com/justdancecloud/danws_java/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Java 17+](https://img.shields.io/badge/Java-17%2B-orange)](https://adoptium.net/)
 
 Java implementation of [DanProtocol v3.5](./dan-protocol.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
 
