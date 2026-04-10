@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.4.2] - 2026-04-11
+### Fixed
+- **Codec signal frame registry:** `SERVER_KEY_DELETE` (0x22) and `CLIENT_KEY_REQUEST` (0x23) added to `Codec.isSignalFrame()`, restoring parity with `StreamParser` and the DanProtocol v3.5 spec.
+- **Client topic-state concurrency:** `subscriptions`, `topicClientHandles`, `topicIndexMap`, `indexToTopic` now use `ConcurrentHashMap`. Prevents state corruption when user threads call `subscribe()/topic()` while the Netty event loop processes frames.
+- **Unhandled error escalation:** `emitError` no longer throws from inside the Netty event loop or the shared heartbeat scheduler when no `onError` listener is registered; it logs to debug/stderr instead.
+- **ArrayShift bounds:** shift count is now clamped to `[0, currentLength]`, rejecting malformed or hostile `ARRAY_SHIFT_LEFT/RIGHT` frames that previously caused loop under/overflow.
+- **Heartbeat resilience:** `scheduleAtFixedRate` tasks are wrapped in `try/catch` so a single transient exception no longer cancels future heartbeat ticks for a client.
+- **UUIDv7 entropy:** replaced `new Random()` with a static `SecureRandom` — client IDs are no longer predictable and allocation is eliminated from the hot path.
+
+### Added
+- **Server protocol version check:** 18-byte `IDENTIFY` payloads now have their major version validated against `PROTOCOL_MAJOR=3`; mismatched clients are rejected.
+
+### Changed
+- Protocol constant bumped to **3.5** (`PROTOCOL_MAJOR=3`, `PROTOCOL_MINOR=5`) in `IDENTIFY` frames.
+
 ## [2.4.1] - 2026-04-08
 ### Added
 - ReentrantReadWriteLock on PrincipalTX, DanWebSocketSession, TopicPayload

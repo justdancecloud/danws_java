@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'io.github.justdancecloud'
-version = '2.4.1'
+version = '2.4.2'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -19,7 +19,13 @@ repositories {
 }
 
 dependencies {
-    api 'io.netty:netty-all:4.2.12.Final'
+    // Slim Netty dependency set — only the modules actually used (was netty-all).
+    // netty-all is ~4MB and pulls in every transport/codec; the core WS server
+    // only needs buffer + transport + http codec (which transitively pulls the
+    // rest of what we touch).
+    api 'io.netty:netty-buffer:4.2.12.Final'
+    api 'io.netty:netty-transport:4.2.12.Final'
+    api 'io.netty:netty-codec-http:4.2.12.Final'
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -38,6 +44,7 @@ test {
 
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:deprecation']
 }
 
 tasks.withType(Javadoc) {
@@ -80,22 +87,29 @@ publishing {
     }
 
     repositories {
+        // Release workflow uses the Central Portal Publisher API directly
+        // (see CONTRIBUTING / CLAUDE notes): publish to the local repo below,
+        // bundle it into a ZIP, then POST to
+        // https://central.sonatype.com/api/v1/publisher/upload
+        //
+        // The legacy OSSRH staging endpoint (ossrh-staging-api.central.sonatype.com)
+        // does *not* auto-release — previously configured here but removed to
+        // avoid publishing to a dead-end staging area.
         maven {
             name = 'local'
             url = layout.buildDirectory.dir('repo')
-        }
-        maven {
-            name = 'central'
-            url = 'https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/'
-            credentials {
-                username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME') ?: ''
-                password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD') ?: ''
-            }
         }
     }
 }
 
 signing {
     useGpgCmd()
+    // Allow GPG key to be supplied via env var GPG_KEY_NAME so keyName isn't
+    // hardcoded in gradle.properties. Falls back to the gradle.properties value
+    // (or skips signing entirely if neither is set and we're not publishing).
+    def gpgKey = System.getenv('GPG_KEY_NAME') ?: findProperty('signing.gnupg.keyName')
+    if (gpgKey) {
+        ext.'signing.gnupg.keyName' = gpgKey
+    }
     sign publishing.publications.mavenJava
 }

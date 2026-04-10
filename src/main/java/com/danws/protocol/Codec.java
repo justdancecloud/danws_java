@@ -147,6 +147,8 @@ public final class Codec {
                 || ft == FrameType.CLIENT_RESET
                 || ft == FrameType.SERVER_RESYNC_REQ
                 || ft == FrameType.AUTH_OK
-                || ft == FrameType.SERVER_FLUSH_END;
+                || ft == FrameType.SERVER_FLUSH_END
+                || ft == FrameType.SERVER_KEY_DELETE
+                || ft == FrameType.CLIENT_KEY_REQUEST;
     }
 }

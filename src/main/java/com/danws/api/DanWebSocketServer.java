@@ -8,7 +8,8 @@ import com.danws.state.KeyRegistry;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.*;
@@ -39,8 +40,12 @@ public class DanWebSocketServer {
     private boolean authEnabled;
     private long authTimeout = 5000;
 
-    private final EventLoopGroup bossGroup = new NioEventLoopGroup(1);
-    private final EventLoopGroup workerGroup = new NioEventLoopGroup();
+    /** Protocol version: 3.5 */
+    private static final int PROTOCOL_MAJOR = 3;
+    private static final int PROTOCOL_MINOR = 5;
+
+    private final EventLoopGroup bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+    private final EventLoopGroup workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
     private Channel serverChannel;
 
     private final Map<String, PrincipalTX> principals = new ConcurrentHashMap<>();
@@ -87,6 +92,7 @@ public class DanWebSocketServer {
             b.group(bossGroup, workerGroup)
              .channel(NioServerSocketChannel.class)
              .option(ChannelOption.SO_BACKLOG, 10000)
+             .option(ChannelOption.SO_REUSEADDR, true)
              .childOption(ChannelOption.SO_KEEPALIVE, true)
              .childOption(ChannelOption.TCP_NODELAY, true)
              .childHandler(new ChannelInitializer<SocketChannel>() {
@@ -289,6 +295,18 @@ public class DanWebSocketServer {
                 if (!identified) {
                     if (frame.frameType() != FrameType.IDENTIFY) { ctx.close(); return; }
                     if (!(frame.payload() instanceof byte[] payload) || (payload.length != 16 && payload.length != 18)) { ctx.close(); return; }
+                    // Reject incompatible protocol majors. 18-byte payload carries
+                    // [major, minor] at offsets 16..17; 16-byte legacy payloads are
+                    // still accepted for backwards compatibility.
+                    if (payload.length == 18) {
+                        int clientMajor = payload[16] & 0xFF;
+                        if (clientMajor != PROTOCOL_MAJOR) {
+                            log("Rejecting client with incompatible protocol major: "
+                                    + clientMajor + " (server: " + PROTOCOL_MAJOR + ")", null);
+                            ctx.close();
+                            return;
+                        }
+                    }
                     clientUuid = UuidUtil.bytesToUuid(java.util.Arrays.copyOf(payload, 16));
                     chToUuid.put(ctx.channel().id(), clientUuid);
                     identified = true;

@@ -1,6 +1,7 @@
 package com.danws.api;
 
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import org.junit.jupiter.api.*;
 
 import java.util.*;
@@ -16,7 +17,7 @@ class TenKTest {
 
     @BeforeAll
     static void setupClientGroup() {
-        DanWebSocketClient.setSharedGroup(new NioEventLoopGroup(128));
+        DanWebSocketClient.setSharedGroup(new MultiThreadIoEventLoopGroup(128, NioIoHandler.newFactory()));
     }
 
     @AfterEach

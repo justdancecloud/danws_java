@@ -8,7 +8,8 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.*;
@@ -17,6 +18,7 @@ import io.netty.handler.codec.http.websocketx.*;
 import com.danws.connection.ReconnectEngine;
 
 import java.net.URI;
+import java.security.SecureRandom;
 import java.util.concurrent.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,9 +40,10 @@ public class DanWebSocketClient {
         if (SHARED_GROUP == null) {
             synchronized (DanWebSocketClient.class) {
                 if (SHARED_GROUP == null) {
-                    SHARED_GROUP = new NioEventLoopGroup(
+                    SHARED_GROUP = new MultiThreadIoEventLoopGroup(
                         Math.max(4, Runtime.getRuntime().availableProcessors()),
-                        r -> { Thread t = new Thread(r, "danws-client"); t.setDaemon(true); return t; }
+                        (java.util.concurrent.ThreadFactory) r -> { Thread t = new Thread(r, "danws-client"); t.setDaemon(true); return t; },
+                        NioIoHandler.newFactory()
                     );
                 }
             }
@@ -72,11 +75,15 @@ public class DanWebSocketClient {
     private final Map<Integer, Frame> pendingValues = new ConcurrentHashMap<>();
     private final StreamParser parser = new StreamParser(); // reuse instance
 
-    // Topic state
-    private final Map<String, Map<String, Object>> subscriptions = new LinkedHashMap<>();
-    private final Map<String, TopicClientHandle> topicClientHandles = new LinkedHashMap<>();
-    private final Map<String, Integer> topicIndexMap = new LinkedHashMap<>();
-    private final Map<Integer, String> indexToTopic = new LinkedHashMap<>();
+    // Topic state — accessed from both user threads (subscribe/topic/setParams)
+    // and the Netty event loop (handleFrame), so these must be concurrent.
+    // Subscriptions ordering is preserved via insertion-order iteration of
+    // ConcurrentHashMap keySet snapshots in sendTopicSync (which assigns stable
+    // indices from the current snapshot), so LinkedHashMap ordering is not required.
+    private final Map<String, Map<String, Object>> subscriptions = new ConcurrentHashMap<>();
+    private final Map<String, TopicClientHandle> topicClientHandles = new ConcurrentHashMap<>();
+    private final Map<String, Integer> topicIndexMap = new ConcurrentHashMap<>();
+    private final Map<Integer, String> indexToTopic = new ConcurrentHashMap<>();
 
     private final List<Runnable> onConnect = new ArrayList<>();
     private final List<Runnable> onDisconnect = new ArrayList<>();
@@ -247,8 +254,16 @@ public class DanWebSocketClient {
 
     private void emitError(DanWSException err) {
         if (onError.isEmpty()) {
-            // No error listeners — throw to avoid silent failure (like Node.js EventEmitter)
-            throw err;
+            // No error listeners — log instead of throwing. Throwing from inside
+            // the Netty event loop (or the shared HB scheduler) would tear down
+            // the thread and affect other clients sharing SHARED_GROUP / HB_SCHEDULER.
+            if (debug != null) {
+                debug.accept("Unhandled DanWSException: " + err.getMessage(), err);
+            } else {
+                System.err.println("[DanWS] Unhandled error (no onError listener): "
+                        + err.code() + " " + err.getMessage());
+            }
+            return;
         }
         for (var cb : onError) {
             try { cb.accept(err); } catch (Exception e) { log("onError callback error", e); }
@@ -305,9 +320,9 @@ public class DanWebSocketClient {
 
     // ──── Internals ────
 
-    /** Protocol version: 3.3 */
+    /** Protocol version: 3.5 */
     private static final byte PROTOCOL_MAJOR = 3;
-    private static final byte PROTOCOL_MINOR = 3;
+    private static final byte PROTOCOL_MINOR = 5;
 
     private void handleOpen() {
         state = State.IDENTIFYING;
@@ -431,9 +446,12 @@ public class DanWebSocketClient {
                         prefix = lengthPath.substring(0, lengthPath.length() - ".length".length());
                     }
 
-                    int shiftCount = ((Number) frame.payload()).intValue();
+                    int rawShift = ((Number) frame.payload()).intValue();
                     Object currentLenObj = store.get(frame.keyId());
                     int currentLength = currentLenObj instanceof Number n ? n.intValue() : 0;
+                    // Clamp to protect against malformed/hostile frames — negative or
+                    // oversized shift counts would cause under/overflow in the loop.
+                    int shiftCount = Math.max(0, Math.min(rawShift, currentLength));
 
                     // Shift values left: prefix.0 <- prefix.{shift}, prefix.1 <- prefix.{shift+1}, etc.
                     for (int i = 0; i < currentLength - shiftCount; i++) {
@@ -482,9 +500,11 @@ public class DanWebSocketClient {
                         prefix = lengthPath.substring(0, lengthPath.length() - ".length".length());
                     }
 
-                    int shiftCount = ((Number) frame.payload()).intValue();
+                    int rawShift = ((Number) frame.payload()).intValue();
                     Object currentLenObj = store.get(frame.keyId());
                     int currentLength = currentLenObj instanceof Number n ? n.intValue() : 0;
+                    // Clamp: negative or oversized shiftCount would write out-of-range keys.
+                    int shiftCount = Math.max(0, Math.min(rawShift, currentLength));
 
                     // Shift values right: iterate from high to low to avoid overwriting
                     for (int i = currentLength - 1; i >= 0; i--) {
@@ -605,14 +625,27 @@ public class DanWebSocketClient {
     private void startHeartbeat() {
         stopHeartbeat();
         lastHeartbeatReceived = System.currentTimeMillis();
-        hbSendTask = HB_SCHEDULER.scheduleAtFixedRate(
-                () -> sendRaw(Codec.encodeHeartbeat()), HB_SEND_INTERVAL, HB_SEND_INTERVAL, TimeUnit.MILLISECONDS);
+        // Wrap scheduled tasks in try/catch: scheduleAtFixedRate cancels all
+        // future executions if the task throws, which would silently kill the
+        // heartbeat for this client (and is especially bad because HB_SCHEDULER
+        // is a single shared thread for all clients).
+        hbSendTask = HB_SCHEDULER.scheduleAtFixedRate(() -> {
+            try {
+                sendRaw(Codec.encodeHeartbeat());
+            } catch (Throwable t) {
+                log("Heartbeat send failed", t instanceof Exception e ? e : new RuntimeException(t));
+            }
+        }, HB_SEND_INTERVAL, HB_SEND_INTERVAL, TimeUnit.MILLISECONDS);
         hbCheckTask = HB_SCHEDULER.scheduleAtFixedRate(() -> {
-            if (System.currentTimeMillis() - lastHeartbeatReceived > HB_TIMEOUT) {
-                stopHeartbeat();
-                emitError(new DanWSException("HEARTBEAT_TIMEOUT", "No heartbeat received"));
-                cleanup();
-                handleClose();
+            try {
+                if (System.currentTimeMillis() - lastHeartbeatReceived > HB_TIMEOUT) {
+                    stopHeartbeat();
+                    emitError(new DanWSException("HEARTBEAT_TIMEOUT", "No heartbeat received"));
+                    cleanup();
+                    handleClose();
+                }
+            } catch (Throwable t) {
+                log("Heartbeat check failed", t instanceof Exception e ? e : new RuntimeException(t));
             }
         }, HB_TIMEOUT, 5000, TimeUnit.MILLISECONDS);
     }
@@ -626,10 +659,12 @@ public class DanWebSocketClient {
         if (channel != null) { try { channel.close(); } catch (Exception e) { log("Error closing channel", e); } channel = null; }
     }
 
+    private static final SecureRandom UUID_RNG = new SecureRandom();
+
     private static String generateUUIDv7() {
         long now = System.currentTimeMillis();
         byte[] bytes = new byte[16];
-        new Random().nextBytes(bytes);
+        UUID_RNG.nextBytes(bytes);
         bytes[0] = (byte) (now >> 40); bytes[1] = (byte) (now >> 32);
         bytes[2] = (byte) (now >> 24); bytes[3] = (byte) (now >> 16);
         bytes[4] = (byte) (now >> 8); bytes[5] = (byte) now;

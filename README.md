@@ -5,7 +5,7 @@
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.justdancecloud/dan-websocket)](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket)
 [![npm](https://img.shields.io/npm/v/dan-websocket)](https://www.npmjs.com/package/dan-websocket)
 
-Java implementation of [DanProtocol v3.4](./dan-protocol.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
+Java implementation of [DanProtocol v3.5](./dan-protocol.md). Wire-compatible with the [TypeScript version](https://github.com/justdancecloud/danws_typescript).
 
 ---
 
@@ -1178,7 +1178,7 @@ dan-websocket is available in two languages with identical wire protocol:
 | **Java** | [`io.github.justdancecloud:dan-websocket`](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket) | Gradle / Maven (see above) |
 | **TypeScript** | [`dan-websocket`](https://www.npmjs.com/package/dan-websocket) | `npm install dan-websocket` |
 
-A TypeScript server can serve Java clients and vice versa. The binary protocol (DanProtocol v3.4) is identical on both platforms -- including VarNumber encoding, array shift frames, and ServerKeyDelete/ClientKeyRequest.
+A TypeScript server can serve Java clients and vice versa. The binary protocol (DanProtocol v3.5) is identical on both platforms -- including VarNumber encoding, array shift frames, and ServerKeyDelete/ClientKeyRequest.
 
 ```java
 // Java server
@@ -1200,7 +1200,7 @@ client.connect();
 
 ## Protocol
 
-See [dan-protocol.md](./dan-protocol.md) for the full binary protocol specification (DanProtocol v3.4).
+See [dan-protocol.md](./dan-protocol.md) for the full binary protocol specification (DanProtocol v3.5).
 
 ---
 

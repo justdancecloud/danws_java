@@ -14,11 +14,11 @@ DanProtocol is a **lightweight binary protocol** designed for pushing real-time 
 |----------|-----|
 | **Binary wire format** | Minimal bandwidth. A boolean update is ~13 bytes total (vs ~30+ bytes for JSON). |
 | **DLE-based framing** | Self-synchronizing frames without length prefixes. Robust on unreliable streams. |
-| **Auto-typed** | No schema declaration needed. 16 types detected from values. |
+| **Auto-typed** | No schema declaration needed. 16 data types detected from values. |
 | **4-byte KeyID** | Supports 4B+ unique keys for auto-flatten at scale. |
 | **Auto-flatten** | Objects/arrays expand into dot-path leaf keys at API layer. Only changed fields go on wire. |
 | **Principal-based** | State is per-authenticated-user, not per-connection. Multiple devices share one state. |
-| **VarNumber encoding** | Integers and decimals use variable-length encoding for compact wire representation. |
+| **VarNumber encoding** | Integers and doubles use variable-length encoding (1-9 bytes) instead of fixed 8 bytes. |
 
 ---
 
@@ -61,51 +61,56 @@ Signal frames MUST set DataType to `0x00` (Null). Receivers SHOULD ignore this f
 
 Sent every 10 seconds by both sides. If not received within 15 seconds, the connection is considered dead.
 
+- **Server behavior**: starts heartbeat timer on connection open; resets on any received message.
+- **Client behavior**: starts heartbeat timer after IDENTIFY; resets on any received message.
+- **Timeout**: if no heartbeat or data received within 15 seconds, the side closes the connection.
+- **Check interval**: the heartbeat timeout is checked every 5 seconds (not continuously).
+
 ---
 
 ## 3. Frame Types
 
 ### 3.1 Server to Client -- Data
 
-| Code | Name | Payload |
-|------|------|---------|
-| `0x00` | ServerKeyRegistration | UTF-8 keyPath |
-| `0x01` | ServerValue | Typed value |
+| Code | Name | Payload | Description |
+|------|------|---------|-------------|
+| `0x00` | ServerKeyRegistration | UTF-8 keyPath | Registers a new keyId-to-path mapping |
+| `0x01` | ServerValue | Typed value | Sends a value update for a registered keyId |
 
 ### 3.2 Client to Server -- Data (Topic Mode)
 
-| Code | Name | Payload |
-|------|------|---------|
-| `0x02` | ClientKeyRegistration | UTF-8 keyPath |
-| `0x03` | ClientValue | Typed value |
+| Code | Name | Payload | Description |
+|------|------|---------|-------------|
+| `0x02` | ClientKeyRegistration | UTF-8 keyPath | Client registers a key (topic subscriptions) |
+| `0x03` | ClientValue | Typed value | Client sends a value (topic name/params) |
 
-### 3.3 Handshake
+### 3.3 Handshake / Sync
 
-| Code | Name | Direction | Payload |
-|------|------|-----------|---------|
-| `0x04` | ServerSync | S->C | -- |
-| `0x05` | ClientReady | C->S | -- |
-| `0x06` | ClientSync | C->S | -- |
-| `0x07` | ServerReady | S->C | -- |
+| Code | Name | Direction | Payload | Description |
+|------|------|-----------|---------|-------------|
+| `0x04` | ServerSync | S->C | -- | Server has finished sending key registrations |
+| `0x05` | ClientReady | C->S | -- | Client is ready to receive values |
+| `0x06` | ClientSync | C->S | -- | Client has finished sending topic subscriptions |
+| `0x07` | ServerReady | S->C | -- | Server acknowledges client sync |
 
 ### 3.4 Control
 
-| Code | Name | Direction | Payload |
-|------|------|-----------|---------|
-| `0x08` | Error | Both | UTF-8 message |
-| `0x09` | ServerReset | S->C | -- |
-| `0x0A` | ClientResyncReq | C->S | -- |
-| `0x0B` | ClientReset | C->S | -- |
-| `0x0C` | ServerResyncReq | S->C | -- |
+| Code | Name | Direction | Payload | Description |
+|------|------|-----------|---------|-------------|
+| `0x08` | Error | Both | UTF-8 message | Error with human-readable description |
+| `0x09` | ServerReset | S->C | -- | Server instructs client to clear all state |
+| `0x0A` | ClientResyncReq | C->S | -- | Client requests full state resynchronization |
+| `0x0B` | ClientReset | C->S | -- | Client clears its topic subscription state |
+| `0x0C` | ServerResyncReq | S->C | -- | Server instructs client to re-send subscriptions |
 
 ### 3.5 Authentication
 
-| Code | Name | Direction | Payload |
-|------|------|-----------|---------|
-| `0x0D` | Identify | C->S | 16-byte UUIDv7 (+ optional 2-byte version) |
-| `0x0E` | Auth | C->S | UTF-8 token |
-| `0x0F` | AuthOk | S->C | -- |
-| `0x11` | AuthFail | S->C | UTF-8 reason |
+| Code | Name | Direction | Payload | Description |
+|------|------|-----------|---------|-------------|
+| `0x0D` | Identify | C->S | 16-byte UUIDv7 (+ optional 2-byte version) | Client identifies itself |
+| `0x0E` | Auth | C->S | UTF-8 token | Client sends auth token |
+| `0x0F` | AuthOk | S->C | -- | Server confirms authentication |
+| `0x11` | AuthFail | S->C | UTF-8 reason | Server rejects authentication |
 
 **IDENTIFY (0x0D) Payload Format:**
 
@@ -115,10 +120,10 @@ Payload: 16-byte UUIDv7 + optional 2-byte protocol version (major, minor). Serve
 
 ### 3.6 Array Operations
 
-| Code | Name | Direction | Payload |
-|------|------|-----------|---------|
-| `0x20` | ArrayShiftLeft | S->C | Int32 shift count |
-| `0x21` | ArrayShiftRight | S->C | Int32 shift count |
+| Code | Name | Direction | Payload | Description |
+|------|------|-----------|---------|-------------|
+| `0x20` | ArrayShiftLeft | S->C | Int32 shift count | Shift array elements left by N |
+| `0x21` | ArrayShiftRight | S->C | Int32 shift count | Shift array elements right by N |
 
 **ARRAY_SHIFT_LEFT (0x20):**
 
@@ -156,7 +161,7 @@ Used to optimize array right-shift patterns (e.g., prepend: `[1,2,3,4,5]` -> `[0
 
 **Server-side array diff detection (Smart Detection Algorithm):**
 
-When `set(key, array)` is called and a previous array exists for that key, the server compares old and new arrays to detect shift patterns. The algorithm supports **any shift amount** (MAX_SHIFT=50, with quickHash pre-filter for performance).
+When `set(key, array)` is called and a previous array exists for that key, the server compares old and new arrays to detect shift patterns. The algorithm supports **any shift amount** (bounded to 50 positions for performance).
 
 1. **Left shift**: Compare `old[k:]` against `new[0:matchLen]` for any valid `k`
    - If a contiguous match is found: send ARRAY_SHIFT_LEFT(k) + new tail elements + length update if changed
@@ -200,10 +205,10 @@ DLE STX  =0x21     =0x06         shiftCount=1
 
 ### 3.7 Key Lifecycle
 
-| Code | Name | Direction | Payload |
-|------|------|-----------|---------|
-| `0x22` | ServerKeyDelete | S->C | Signal (no payload) |
-| `0x23` | ClientKeyRequest | C->S | Signal (no payload) |
+| Code | Name | Direction | Payload | Description |
+|------|------|-----------|---------|-------------|
+| `0x22` | ServerKeyDelete | S->C | Signal (no payload) | Incremental key deletion |
+| `0x23` | ClientKeyRequest | C->S | Signal (no payload) | Single-key recovery request |
 
 **ServerKeyDelete (0x22):**
 
@@ -220,7 +225,9 @@ Incremental key deletion. The server sends this instead of a full ServerReset+re
 
 **Use cases:**
 - `server.clear("user")` -- sends ServerKeyDelete for each flattened sub-key
-- Type change (e.g., number->string) -- sends ServerKeyDelete(old keyId) + ServerKeyRegistration(new keyId) + ServerSync + ServerValue
+- Type change (e.g., number to string) -- sends ServerKeyDelete(old keyId) + ServerKeyRegistration(new keyId) + ServerSync + ServerValue
+
+**KeyId reuse:** Deleted keyIds are added to a reuse pool (`freedKeyIds`, capped at 10,000 entries). New key registrations draw from this pool first before allocating new IDs, preventing keyId exhaustion on long-running servers.
 
 **ClientKeyRequest (0x23):**
 
@@ -235,19 +242,19 @@ Single-key recovery. The client sends this when it receives a ServerValue for an
 2. Send: ServerKeyRegistration(keyId, path, type) + ServerSync + ServerValue(keyId, value)
 3. If keyId not found, no response (client will timeout and may request full resync)
 
-O(1) lookup is achieved via a reverse keyId index maintained in TopicPayload and KeyRegistry.
-
 **Client behavior for unknown keyId:**
 1. Receive ServerValue(keyId=X) but keyId X is not in registry
 2. Send ClientKeyRequest(keyId=X)
 3. Buffer the value in pendingValues map
 4. When ServerKeyRegistration arrives for keyId X, apply the buffered value immediately
 
+**Client uses O(1) reverse keyId index** for looking up key requests, avoiding linear scans.
+
 ### 3.8 Batch Boundary
 
-| Code | Name | Direction | Payload |
-|------|------|-----------|---------|
-| `0xFF` | ServerFlushEnd | S->C | -- |
+| Code | Name | Direction | Payload | Description |
+|------|------|-----------|---------|-------------|
+| `0xFF` | ServerFlushEnd | S->C | -- | End of batch marker |
 
 **SERVER_FLUSH_END (0xFF):**
 
@@ -265,160 +272,175 @@ Sent automatically at the end of every BulkQueue flush batch. This signal tells 
 
 Types are auto-detected from application values. No explicit declaration needed.
 
-| Code | Type | Size | JS / Java Type |
-|------|------|------|----------------|
-| `0x00` | Null | 0 | `null` |
-| `0x01` | Bool | 1 | `boolean` / `Boolean` |
-| `0x02` | Uint8 | 1 | -- |
-| `0x03` | Uint16 | 2 | -- |
-| `0x04` | Uint32 | 4 | -- / `Integer` |
-| `0x05` | Uint64 | 8 | `bigint` / `Long` |
-| `0x06` | Int32 | 4 | -- / `Integer` |
-| `0x07` | Int64 | 8 | `bigint` / `Long` |
-| `0x08` | Float32 | 4 | -- / `Float` |
-| `0x09` | Float64 | 8 | `number` / `Double` |
-| `0x0A` | String | var | `string` / `String` |
-| `0x0B` | Binary | var | `Uint8Array` / `byte[]` |
-| `0x0C` | Timestamp | 8 | `Date` / `Date` |
-| `0x0D` | VarInteger | var | `number` / `Integer`, `Long` |
-| `0x0E` | VarDouble | var | `number` / `Double` |
-| `0x0F` | VarFloat | var | `number` / `Float` |
+### 4.1 Complete Data Type Table
 
-### Auto-Detection Rules
+| Code | Type | Size | JS / Java Type | Description |
+|------|------|------|----------------|-------------|
+| `0x00` | Null | 0 | `null` / `null` | Absence of value |
+| `0x01` | Bool | 1 | `boolean` / `Boolean` | `0x00` = false, `0x01` = true |
+| `0x02` | Uint8 | 1 | -- | Unsigned 8-bit integer (0-255) |
+| `0x03` | Uint16 | 2 | -- | Unsigned 16-bit integer (big-endian) |
+| `0x04` | Uint32 | 4 | -- / `Integer` | Unsigned 32-bit integer (big-endian) |
+| `0x05` | Uint64 | 8 | `bigint` / `Long` | Unsigned 64-bit integer (big-endian) |
+| `0x06` | Int32 | 4 | -- / `Integer` | Signed 32-bit integer (big-endian) |
+| `0x07` | Int64 | 8 | `bigint` / `Long` | Signed 64-bit integer (big-endian) |
+| `0x08` | Float32 | 4 | -- / `Float` | IEEE 754 single-precision (big-endian) |
+| `0x09` | Float64 | 8 | `number` / `Double` | IEEE 754 double-precision (big-endian) |
+| `0x0A` | String | variable | `string` / `String` | UTF-8 encoded, length = payload size |
+| `0x0B` | Binary | variable | `Uint8Array` / `byte[]` | Raw bytes, length = payload size |
+| `0x0C` | Timestamp | 8 | `Date` / `Date` | Milliseconds since Unix epoch as Int64 |
+| `0x0D` | VarInteger | variable | `number` (integer) / `Integer`, `Long` | Zigzag + VarInt encoded integer (1-9 bytes) |
+| `0x0E` | VarDouble | variable | `number` (non-integer) / `Double` | Scale + VarInt mantissa (2-9 bytes) |
+| `0x0F` | VarFloat | variable | -- / `Float` (decode only in JS) | Float32 fallback variant |
 
-| Value | Wire Type |
-|-------|-----------|
-| `null` | Null |
-| `true` / `false` | Bool |
-| Java `Integer`, `Long`, `Short`, `Byte` | VarInteger |
-| Java `Double`, `BigDecimal` | VarDouble |
-| Java `Float` | VarFloat |
-| `string` / `String` | String |
-| `Uint8Array` / `byte[]` | Binary |
-| `Date` / `Instant` | Timestamp |
-| `BigInteger` (< 64 bits) | VarInteger |
-| `BigInteger` (>= 64 bits) | String (fallback) |
-| `{ ... }` / `[...]` (object/array) | **Auto-flatten** (API layer, not a wire type) |
+### 4.2 VarInteger Encoding (0x0D)
 
-### VarInteger (0x0D) -- Compact Variable-Length Integer Encoding
+A compact variable-length encoding for integer values using zigzag + unsigned VarInt. Added in protocol v3.5.
 
-VarInteger encodes all integer types (Integer, Long, Short, Byte) using zigzag + unsigned VarInt.
+**Zigzag encoding:** Maps signed integers to unsigned integers so that small-magnitude values (positive or negative) use fewer bytes:
+- Encode: `(n >= 0) ? n * 2 : (-n) * 2 - 1`
+- Decode: `(zigzag & 1) ? -floor(zigzag / 2) - 1 : floor(zigzag / 2)`
+- Mapping: `0->0, -1->1, 1->2, -2->3, 2->4, ...`
 
-**Zigzag encoding:** Maps signed long to unsigned long: `(n << 1) ^ (n >> 63)`
-- 0 -> 0, -1 -> 1, 1 -> 2, -2 -> 3, 2 -> 4, ...
-
-**Payload:** The zigzag-encoded value as unsigned VarInt (protobuf-style: 7 bits per byte, MSB = continuation).
-
-**Deserialization type mapping:**
-- Fits in int32 range -> `Integer` (Java) / `number` (JS)
-- Exceeds int32 range -> `Long` (Java) / `number` (JS)
-
-**Wire examples:**
-
-| Value | Bytes | Explanation |
-|-------|-------|-------------|
-| `0` | `00` | zigzag=0, VarInt=0 |
-| `1` | `02` | zigzag=2, VarInt=2 |
-| `-1` | `01` | zigzag=1, VarInt=1 |
-| `42` | `54` | zigzag=84, VarInt=84 (0x54) |
-| `-42` | `53` | zigzag=83, VarInt=83 (0x53) |
-| `300` | `D8 04` | zigzag=600, VarInt: 0xD8 0x04 (2 bytes) |
-| `2147483647` (INT_MAX) | `FE FF FF FF 0F` | zigzag=4294967294, VarInt: 5 bytes |
-
-### VarDouble (0x0E) -- Compact Variable-Length Double Encoding
-
-VarDouble encodes Double values using scale + mantissa encoding with Float64 fallback.
-
-**First byte layout: `[FSSS SSSS]`**
-
-| Bit | Name | Meaning |
-|-----|------|---------|
-| F (bit 7) | Fallback flag | 1 = Float64 raw 8 bytes follow |
-| SSSSSSS (bits 0-6) | Sign + Scale | 0-63: positive, scale = value; 64-127: negative, scale = value - 64 |
-
-**When F=0 (normal encoding):**
-- First byte encodes sign and decimal scale
-- Followed by an unsigned VarInt mantissa (protobuf-style: 7 bits per byte, MSB = continuation)
-- Value = mantissa / 10^scale (negated if sign bit set)
-
-**When F=1 (byte = 0x80):**
-- Next 8 bytes = raw IEEE 754 Float64
-- Used for: NaN, Infinity, -Infinity, -0, scientific notation, scale > 63, mantissa overflow
-
-**Deserialization:** Always returns `Double` (Java) / `number` (JS).
-
-**Wire examples:**
-
-| Value | Bytes | Explanation |
-|-------|-------|-------------|
-| `42.0` | `00 2A` | scale=0, positive, mantissa=42 |
-| `-7.0` | `40 07` | scale=0, negative, mantissa=7 |
-| `3.14` | `02 BA 02` | scale=2, positive, mantissa=314 (VarInt: 0xBA 0x02) |
-| `0.0` | `00 00` | scale=0, positive, mantissa=0 |
-| `100.5` | `01 E9 07` | scale=1, positive, mantissa=1005 (VarInt: 0xE9 0x07) |
-| `Math.PI` | `80 [8 bytes]` | fallback Float64 |
-| `NaN` | `80 [8 bytes]` | fallback Float64 |
-| `Infinity` | `80 [8 bytes]` | fallback Float64 |
-
-### VarFloat (0x0F) -- Compact Variable-Length Float Encoding
-
-VarFloat encodes Float values using the same scale + mantissa encoding as VarDouble, but with Float32 fallback instead of Float64.
-
-**First byte layout:** Same as VarDouble: `[FSSS SSSS]`
-
-**When F=0 (normal encoding):**
-- Same as VarDouble -- first byte encodes sign and scale, followed by unsigned VarInt mantissa.
-- Value = mantissa / 10^scale (negated if sign bit set)
-
-**When F=1 (byte = 0x80):**
-- Next 4 bytes = raw IEEE 754 Float32 (instead of 8 bytes for VarDouble)
-- Used for: NaN, Infinity, -Infinity, -0, and values that cannot be represented compactly
-
-**Deserialization:** Returns `Float` (Java) / `number` (JS).
-
-### VarInt Encoding (unsigned, protobuf-style)
-
-Used by VarInteger, VarDouble, and VarFloat for the mantissa/value component:
-- 7 bits per byte, MSB = continuation bit
-- `0-127`: 1 byte `[0XXXXXXX]`
-- `128-16383`: 2 bytes `[1XXXXXXX] [0XXXXXXX]`
-- Up to 10 bytes for 64-bit values
+**VarInt encoding** (protobuf-style unsigned):
+- 7 bits per byte, MSB (most significant bit) = continuation bit
+- If MSB = 1, more bytes follow. If MSB = 0, this is the last byte.
+- Byte pattern:
+  - `0-127`: 1 byte `[0XXXXXXX]`
+  - `128-16383`: 2 bytes `[1XXXXXXX] [0XXXXXXX]`
+  - `16384-2097151`: 3 bytes `[1XXXXXXX] [1XXXXXXX] [0XXXXXXX]`
+  - Up to 9 bytes for 64-bit values.
 
 **Examples:**
 
-| Unsigned Value | Encoded Bytes | Explanation |
-|----------------|---------------|-------------|
-| 0 | `00` | Single byte, no continuation |
-| 127 | `7F` | Single byte, maximum 7-bit value |
-| 128 | `80 01` | Continuation bit set, then 1 |
-| 300 | `AC 02` | 300 = 0b100101100 -> split into 7-bit groups |
-| 16384 | `80 80 01` | 3 bytes |
+| Value | Zigzag | VarInt Bytes | Total Size | Description |
+|-------|--------|-------------|------------|-------------|
+| `0` | 0 | `00` | 1 byte | Minimum encoding |
+| `1` | 2 | `02` | 1 byte | Small positive |
+| `-1` | 1 | `01` | 1 byte | Small negative |
+| `42` | 84 | `54` | 1 byte | Fits in 7 bits after zigzag |
+| `-42` | 83 | `53` | 1 byte | Fits in 7 bits after zigzag |
+| `63` | 126 | `7E` | 1 byte | Largest 1-byte positive |
+| `64` | 128 | `80 01` | 2 bytes | Smallest 2-byte positive |
+| `300` | 600 | `D8 04` | 2 bytes | 2-byte encoding |
+| `100000` | 200000 | `C0 9A 0C` | 3 bytes | 3-byte encoding |
+
+**Size comparison vs fixed-width:**
+
+| Value Range | VarInteger | Int32 | Int64 | Savings |
+|-------------|-----------|-------|-------|---------|
+| -64 to 63 | 1 byte | 4 bytes | 8 bytes | 75-87% |
+| -8192 to 8191 | 2 bytes | 4 bytes | 8 bytes | 50-75% |
+| Most app values | 1-3 bytes | 4 bytes | 8 bytes | significant |
+
+### 4.3 VarDouble Encoding (0x0E)
+
+A compact variable-length encoding for non-integer numbers using scale + mantissa. Added in protocol v3.5.
+
+**First byte layout: `[FSSS SSSS]`**
+
+- **F** (bit 7) = fallback flag. When set (`0x80`), the next 8 bytes are a raw Float64 (big-endian IEEE 754). Total: 9 bytes.
+- **SSSSSSS** (bits 6-0) = sign + scale:
+  - `0~63`: positive number, scale = value. Followed by unsigned VarInt mantissa.
+  - `64~127`: negative number, scale = value - 64. Followed by unsigned VarInt mantissa.
+
+**VarInt mantissa** (protobuf-style unsigned):
+- 7 bits per byte, MSB = continuation bit
+- `0-127`: 1 byte `[0XXXXXXX]`
+- `128-16383`: 2 bytes `[1XXXXXXX] [0XXXXXXX]`
+- Up to 8 bytes for large mantissas.
+
+**Reconstructing the number:** `(-1 if negative) * mantissa / 10^scale`
+
+**Fallback mode (F=1):** Used when the value cannot be represented as scale + mantissa:
+- NaN, Infinity, -Infinity, -0
+- Scientific notation values
+- Scale > 63
+- Numbers whose decimal mantissa exceeds `Number.MAX_SAFE_INTEGER`
+
+Byte `0x80` followed by 8-byte IEEE 754 Float64 (big-endian). Total: 9 bytes.
+
+**Examples:**
+
+| Value | Bytes (hex) | Size | Description |
+|-------|-------------|------|-------------|
+| `3.14` | `02 BA 02` | 3 bytes | scale=2, positive, mantissa=314 |
+| `-7.5` | `41 4B` | 2 bytes | scale=1, negative, mantissa=75 |
+| `0.001` | `03 01` | 2 bytes | scale=3, positive, mantissa=1 |
+| `99.99` | `02 8F 4E` | 3 bytes | scale=2, positive, mantissa=9999 |
+| `Math.PI` | `80 [8 bytes]` | 9 bytes | fallback Float64 (irrational) |
+| `NaN` | `80 [8 bytes]` | 9 bytes | fallback Float64 |
+| `Infinity` | `80 [8 bytes]` | 9 bytes | fallback Float64 |
+
+**Size comparison vs fixed-width Float64:**
+
+| Value Type | VarDouble | Float64 | Savings |
+|------------|----------|---------|---------|
+| `0.5`, `1.5` | 2 bytes | 8 bytes | 75% |
+| `3.14`, `99.99` | 3 bytes | 8 bytes | 62% |
+| Irrational numbers | 9 bytes | 8 bytes | -12% (1 byte overhead) |
+
+### 4.4 VarFloat Encoding (0x0F)
+
+Same encoding as VarDouble, except the fallback uses 4-byte Float32 instead of 8-byte Float64.
+
+- **Fallback (F=1):** Byte `0x80` followed by 4-byte IEEE 754 Float32 (big-endian). Total: 5 bytes.
+- **Non-fallback:** Identical to VarDouble (scale + mantissa). Bytes are the same.
+
+JS/TS never auto-detects as VarFloat (JavaScript has no float32 distinction), but must be able to **decode** it for cross-language compatibility with Java `Float` values. Java auto-detects `Float` as VarFloat.
+
+### 4.5 Auto-Detection Rules
+
+The protocol automatically selects the wire type based on the value's runtime type. No explicit type declarations are needed.
+
+| Value | Wire Type | Rationale |
+|-------|-----------|-----------|
+| `null` | Null (0x00) | Absence of value |
+| `true` / `false` | Bool (0x01) | Boolean literal |
+| JS `number` (integer) / Java `Integer` | VarInteger (0x0D) | Variable-length saves bytes for typical values |
+| JS `number` (non-integer) / Java `Double` | VarDouble (0x0E) | Variable-length for decimal numbers |
+| Java `Float` | VarFloat (0x0F) | Float32 fallback variant |
+| JS `bigint` >= 0 / Java `Long` >= 0 | Uint64 (0x05) | Fixed 8 bytes for large unsigned values |
+| JS `bigint` < 0 / Java `Long` < 0 | Int64 (0x07) | Fixed 8 bytes for large signed values |
+| `string` / `String` | String (0x0A) | UTF-8 encoded |
+| `Uint8Array` / `byte[]` | Binary (0x0B) | Raw byte payload |
+| `Date` | Timestamp (0x0C) | Milliseconds since Unix epoch |
+| `{ ... }` / `[...]` (object/array) | **Auto-flatten** | API layer expands to leaf keys (not a wire type) |
+
+> **Note**: Prior to v3.5, integers used Int32/Uint32 and non-integers used Float64. Since v3.5, VarInteger and VarDouble are the defaults, providing better compression for typical application values.
 
 ---
 
 ## 5. DLE Byte-Stuffing
 
-### Rules
+DLE (Data Link Escape, `0x10`) is used as a framing character. Since `0x10` has special meaning, any occurrence of `0x10` within the frame body must be escaped.
+
+### Escaping Rules
 
 | Wire Bytes | Meaning |
 |------------|---------|
-| `0x10 0x02` | Frame start |
-| `0x10 0x03` | Frame end |
-| `0x10 0x05` | Heartbeat |
-| `0x10 0x10` | Literal `0x10` in data |
-| `0x10 [other]` | Protocol error |
+| `0x10 0x02` | Frame start (DLE STX) |
+| `0x10 0x03` | Frame end (DLE ETX) |
+| `0x10 0x05` | Heartbeat (DLE ENQ) |
+| `0x10 0x10` | Literal `0x10` byte in data (escaped) |
+| `0x10 [other]` | Protocol error -- discard and resync |
 
-The entire frame body (FrameType + KeyID + DataType + Payload) is DLE-escaped. This means any byte with value `0x10` within the body is doubled to `0x10 0x10` on the wire.
+### How It Works
 
-**Encoding (sender):**
-1. Build raw body: FrameType(1) + KeyID(4) + DataType(1) + Payload(N)
-2. Scan body for `0x10` bytes and replace each with `0x10 0x10`
-3. Wrap with `0x10 0x02` (start) and `0x10 0x03` (end)
+**Encoding (sender):** Scan the frame body (FrameType + KeyID + DataType + Payload). For every byte that equals `0x10`, emit `0x10 0x10` instead of `0x10`.
 
-**Decoding (receiver):**
-1. Detect frame boundaries via `0x10 0x02` (start) and `0x10 0x03` (end)
-2. Within the frame body, replace each `0x10 0x10` back to a single `0x10`
-3. Parse: FrameType(1) + KeyID(4) + DataType(1) + Payload(remaining)
+**Decoding (receiver):** Scan between DLE STX and DLE ETX. When `0x10` is encountered:
+- If followed by `0x10`: consume both bytes, output one `0x10` byte.
+- If followed by `0x03`: this is the frame end marker.
+- Any other sequence after `0x10` is a protocol error.
+
+**Example:** KeyID `0x00000010` contains a DLE byte. On the wire:
+```
+10 02 01 00 00 00 10 10 0a ... 10 03
+              ^^^^^^^^^ 0x10 in KeyID escaped to 0x10 0x10
+```
+
+The entire frame body (FrameType + KeyID + DataType + Payload) is DLE-escaped. The DLE STX and DLE ETX delimiters are NOT escaped.
 
 ---
 
@@ -439,7 +461,7 @@ Objects and arrays are expanded into dot-path leaf keys before going on the wire
 - Circular references are detected and rejected
 - When an array shrinks, leftover keys are automatically removed
 - Unchanged leaf values are not re-transmitted (field-level dedup)
-- Flatten paths are pre-computed for performance
+- Flatten path strings are pre-computed and cached for performance
 
 ### Topic Mode Wire Prefix
 
@@ -454,68 +476,48 @@ Client-to-Server topic subscriptions use `topic.<index>.name` and `topic.<index>
 
 ---
 
-## 7. Key Lifecycle
+## 7. Connection Lifecycle
 
-### Key Registration
-
-Keys are registered before values are sent. Each key gets a unique 4-byte keyId.
-
-1. Server calls `set("sensor.temp", 23.5)`
-2. If `sensor.temp` is not yet registered, server sends `ServerKeyRegistration(keyId=N, path="sensor.temp")`
-3. Server sends `ServerSync` to mark the end of the registration batch
-4. Client sends `ClientReady` to acknowledge
-5. Server sends `ServerValue(keyId=N, value=23.5)`
-
-### Key Deletion
-
-When a key is removed (via `clear()` or type change), the server sends `ServerKeyDelete(keyId)` for each affected key. The keyId is then recycled into a `freedKeyIds` pool (capped at 10,000 entries) for reuse by future key registrations.
-
-### Key Recovery
-
-If a client receives a `ServerValue` for an unknown keyId (e.g., due to packet reordering or missed registration), it sends `ClientKeyRequest(keyId)` for single-key recovery instead of requesting a full state resync.
-
----
-
-## 8. Connection Lifecycle
-
-### 8.1 Connection (No Auth)
+### 7.1 Handshake Sequence (No Auth)
 
 ```
 Client                         Server
   |                               |
   |-- IDENTIFY (UUIDv7) -------->|  Create session
   |                               |
-  |<-- Key Reg (key1, float64) --|  Register keys
-  |<-- Key Reg (key2, string)  --|
-  |<-- Server SYNC --------------|
+  |<-- Key Reg (key1, ...) ------|  Register keys
+  |<-- Key Reg (key2, ...) ------|
+  |<-- ServerSync ---------------|  "Key registration complete"
   |                               |
-  |-- Client READY ------------->|
+  |-- ClientReady --------------->|  "Ready to receive values"
   |                               |
   |<-- Value (key1 = 23.5) ------|  Full state sync
   |<-- Value (key2 = "hello") ---|
-  |<-- SERVER_FLUSH_END ---------|  Batch boundary
+  |<-- ServerFlushEnd ------------|  "Batch complete"
   |                               |
   |<-- Value (key1 = 24.1) ------|  Live updates...
-  |<-- SERVER_FLUSH_END ---------|
+  |<-- ServerFlushEnd ------------|
 ```
 
-### 8.2 Connection (With Auth)
+### 7.2 Handshake Sequence (With Auth)
 
 ```
 Client                         Server
   |                               |
   |-- IDENTIFY (UUIDv7) -------->|
   |-- AUTH (token) ------------->|  verify + determine principal
-  |<-- AUTH_OK ------------------|  bind to principal
+  |<-- AuthOk -------------------|  bind to principal
   |                               |
   |<-- Key Reg ... --------------|
-  |<-- Server SYNC --------------|
-  |-- Client READY ------------->|
+  |<-- ServerSync ---------------|
+  |-- ClientReady --------------->|
   |<-- Values ... ---------------|
-  |<-- SERVER_FLUSH_END ---------|
+  |<-- ServerFlushEnd ------------|
 ```
 
-### 8.3 Topic Subscription (Topic Modes)
+If authentication fails, the server sends `AuthFail` with a reason string and closes the connection.
+
+### 7.3 Topic Subscription (Topic Modes)
 
 ```
 Client                         Server
@@ -527,41 +529,51 @@ Client                         Server
   |                               |
   |<-- ServerReset --------------|  Full state rebuild
   |<-- Key Reg (t.0.items.0.title, ...) -|
-  |<-- Server SYNC --------------|
-  |-- Client READY ------------->|
+  |<-- ServerSync ---------------|
+  |-- ClientReady --------------->|
   |<-- Values ... ---------------|
-  |<-- SERVER_FLUSH_END ---------|
+  |<-- ServerFlushEnd ------------|
 ```
 
-### 8.4 Recovery
+### 7.4 Full State Recovery (Resync)
 
-If client receives a value for an unknown key:
+If the client's state is inconsistent, it requests a full resynchronization:
 
-**Single-key recovery (preferred):**
 ```
 Client                         Server
-  |-- ClientKeyRequest(keyId) ->|
-  |<-- KeyRegistration(keyId) --|
-  |<-- ServerSync --------------|
-  |-- ClientReady -------------->|
-  |<-- Value(keyId) ------------|
+  |-- ClientResyncReq ---------->|
+  |<-- ServerReset --------------|
+  |<-- Key Reg (all) ------------|
+  |<-- ServerSync ---------------|
+  |-- ClientReady --------------->|
+  |<-- Values (all) -------------|
+  |<-- ServerFlushEnd ------------|
 ```
 
-**Full resync (fallback):**
+### 7.5 Single-Key Recovery
+
+If the client receives a value for an unknown keyId, it requests only that key (instead of full resync):
+
 ```
 Client                         Server
-  |-- Client RESYNC_REQ ------->|
-  |<-- Server RESET ------------|
-  |<-- Key Reg (all) ----------|
-  |<-- Server SYNC -------------|
-  |-- Client READY ------------->|
-  |<-- Values (all) ------------|
-  |<-- SERVER_FLUSH_END ---------|
+  |<-- ServerValue(keyId=X) -----|  Client doesn't know keyId X
+  |-- ClientKeyRequest(keyId=X)->|  Request info for keyId X
+  |<-- KeyReg(keyId=X, path) ----|  Server sends key info
+  |<-- ServerSync ---------------|
+  |<-- ServerValue(keyId=X) -----|  Server re-sends value
 ```
+
+### 7.6 onReady Timing
+
+The client `onReady` callback is deferred to a microtask after `ClientReady` processing, ensuring all initial values have been received and applied before user code executes.
 
 ---
 
-## 9. Heartbeat
+## 8. Heartbeat Mechanism
+
+### Wire Format
+
+The heartbeat is a 2-byte sequence, NOT a framed message:
 
 ```
 +---------+---------+
@@ -570,10 +582,55 @@ Client                         Server
 +---------+---------+
 ```
 
-- Sent every **10 seconds** by both client and server
-- If no heartbeat is received within **15 seconds**, the connection is considered dead
-- Client uses `ReconnectEngine` with exponential backoff + jitter for automatic reconnection
-- Heartbeat is a 2-byte sequence, not a framed message
+### Timing
+
+| Parameter | Value |
+|-----------|-------|
+| Send interval | 10 seconds |
+| Timeout threshold | 15 seconds |
+| Timeout check interval | 5 seconds |
+
+### Behavior
+
+- Both client and server send heartbeats every 10 seconds.
+- Any received message (heartbeat or data frame) resets the timeout timer.
+- If no message is received within 15 seconds, the connection is considered dead and is closed.
+- The timeout check runs every 5 seconds (not continuously) to reduce overhead.
+- On heartbeat timeout, the client triggers its reconnection logic (if enabled).
+
+---
+
+## 9. Topic Sync Protocol
+
+Topic sync enables clients to subscribe to server-defined topics with parameters.
+
+### Topic Subscription Encoding
+
+Client sends topic subscriptions as flattened key-value pairs:
+
+```
+topic.0.name = "board"          // Topic name
+topic.0.param.roomId = "abc"    // Topic parameter
+topic.1.name = "chat"           // Second topic
+topic.1.param.channel = "general"
+```
+
+### Topic Sync Flow
+
+1. **Client sends ClientReset** -- clears server's record of client subscriptions
+2. **Client registers keys** -- sends ClientKeyRegistration for each topic name/param path
+3. **Client sends values** -- sends ClientValue with topic names and parameter values
+4. **Client sends ClientSync** -- signals subscription list is complete
+5. **Server processes diff** -- compares new subscriptions against previous, triggers subscribe/unsubscribe callbacks
+6. **Server responds with state** -- sends ServerReset + key registrations + ServerSync + values for all subscribed topics
+
+### Topic Wire Prefix
+
+Server-to-client topic data uses `t.<index>.` prefix:
+- `t.0.title` -- first topic's title field
+- `t.1.items.0.name` -- second topic's nested array item
+
+This prefix is stripped by the client SDK before exposing data to application code.
 
 ---
 
@@ -585,7 +642,7 @@ Multiple frames can be concatenated in one transport message:
 [DLE STX ... DLE ETX][DLE STX ... DLE ETX][DLE STX ... DLE ETX]
 ```
 
-The bulk queue batches frames every **100ms** (configurable via `flushIntervalMs`) and sends them as one message. Value frames for the same key are **deduplicated** within the window (only the latest value is sent). A `SERVER_FLUSH_END` frame is appended at the end of every flush.
+The BulkQueue batches frames every **100ms** (configurable via `flushIntervalMs`) and sends them as one message. Value frames for the same key are **deduplicated** within the window (only the latest value is sent). The batch is built using a single-pass `buildAllFrames()` for resync operations.
 
 ---
 
@@ -602,34 +659,11 @@ Rules:
 - Separator: `.`
 - Max length: 200 bytes (UTF-8)
 - No leading/trailing/consecutive dots
+- Key validation results are cached for performance
 
 ---
 
-## 12. Topic Sync
-
-In topic modes (Session Topic, Session Principal Topic), clients subscribe to named topics with optional parameters.
-
-### Subscription Flow
-
-1. Client sends `ClientReset` to clear previous subscriptions
-2. Client registers topic keys: `topic.0.name`, `topic.0.param.key1`, etc.
-3. Client sends values for each topic key
-4. Client sends `ClientSync` to trigger server-side topic diff
-
-### Topic Diff
-
-The server compares the new subscription set against the previous one:
-- **Added topics**: server calls the topic callback to generate payload
-- **Removed topics**: server cleans up topic payload and keys
-- **Changed params**: server re-invokes the callback with new parameters
-
-### Topic Payload
-
-Each topic has a scoped `TopicPayload` key-value store. Keys are prefixed with `t.<index>.` on the wire. The server can use `setCallback` and `setDelayedTask` patterns with `EventType` to manage topic lifecycle.
-
----
-
-## 13. Wire Examples (4-byte KeyID)
+## 12. Wire Examples (4-byte KeyID)
 
 ### Bool value `true` for KeyID 0x00000001
 
@@ -641,7 +675,7 @@ Each topic has a scoped `TopicPayload` key-value store. Keys are prefixed with `
 DLE STX  =0x01    =0x01(bool)  payload: 0x01=true
 ```
 
-### Signal frame (Server SYNC, KeyID=0)
+### Signal frame (ServerSync, KeyID=0)
 
 ```
 10 02 04 00 00 00 00 00 10 03     (10 bytes total)
@@ -650,63 +684,43 @@ DLE STX  =0x01    =0x01(bool)  payload: 0x01=true
 ### String "Alice" for KeyID 0x00000002
 
 ```
-10 02 01 00 00 00 02 0A 41 6C 69 63 65 10 03
-```
-
-### VarInteger value 42 for KeyID 0x00000003
-
-```
-10 02 01 00 00 00 03 0D 54 10 03
-|  |  |  |--------|  |  |  |  |
-|  |  |    KeyID   |  |  DLE ETX
-|  |  FrameType   DataType
-DLE STX  =0x01    =0x0D(VarInteger)  payload: 0x54 (zigzag=84, value=42)
-```
-
-### VarDouble value 3.14 for KeyID 0x00000004
-
-```
-10 02 01 00 00 00 04 0E 02 BA 02 10 03
-|  |  |  |--------|  |  |  |---| |  |
-|  |  |    KeyID   |  |  | mant  DLE ETX
-|  |  FrameType   DataType scale
-DLE STX  =0x01    =0x0E    =2    mantissa=314
+10 02 01 00 00 00 02 0a 41 6c 69 63 65 10 03
 ```
 
 ### KeyID 0x00000010 (contains DLE byte, escaped)
 
 ```
-10 02 01 00 00 00 10 10 0A ... 10 03
+10 02 01 00 00 00 10 10 0a ... 10 03
               ^^^^^^^^^ 0x10 escaped to 0x10 0x10
 ```
 
-### ServerKeyDelete for KeyID 0x00000007
+### VarInteger value `42` for KeyID 0x00000003
 
 ```
-10 02 22 00 00 00 07 00 10 03
-|  |  |  |--------|  |  |  |
-|  |  |    KeyID   |  DLE ETX
-|  |  FrameType   DataType=Null (signal)
-DLE STX  =0x22
+10 02 01 00 00 00 03 0d 54 10 03
+|  |  |  |--------|  |  |  |  |
+|  |  |    KeyID   |  |  DLE ETX
+|  |  FrameType   DataType
+DLE STX  =0x01    =0x0D(VarInteger)  payload: 0x54 (zigzag 84)
 ```
 
-### SERVER_FLUSH_END
+### VarDouble value `3.14` for KeyID 0x00000004
 
 ```
-10 02 FF 00 00 00 00 00 10 03
-|  |  |  |--------|  |  |  |
-|  |  |    KeyID=0 |  DLE ETX
-|  |  FrameType   DataType=Null
-DLE STX  =0xFF
+10 02 01 00 00 00 04 0e 02 ba 02 10 03
+|  |  |  |--------|  |  |------| |  |
+|  |  |    KeyID   |  | payload  DLE ETX
+|  |  FrameType   DataType
+DLE STX  =0x01    =0x0E(VarDouble)  scale=2, mantissa=314
 ```
 
 ---
 
-## 14. Implementations
+## 13. Implementations
 
 | Language | Package | Install |
 |----------|---------|---------|
 | TypeScript | [`dan-websocket`](https://www.npmjs.com/package/dan-websocket) | `npm install dan-websocket` |
 | Java | [`io.github.justdancecloud:dan-websocket`](https://central.sonatype.com/artifact/io.github.justdancecloud/dan-websocket) | Gradle / Maven |
 
-Both implementations are **wire-compatible**: a TypeScript server can serve Java clients and vice versa. Protocol changes must be applied to both implementations simultaneously.
+Both implementations are **wire-compatible**: a TypeScript server can serve Java clients and vice versa. Protocol changes require updates to both implementations simultaneously.
