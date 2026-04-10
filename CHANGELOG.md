@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.4.3] - 2026-04-11
+### Added
+- Automated release workflow (`.github/workflows/release.yml`) — on `v*` tag push, the workflow runs tests, builds signed artifacts, uploads to Maven Central via the Portal API, mirrors to GitHub Packages, and creates a GitHub Release with attached JARs + POM + signatures.
+
 ## [2.4.2] - 2026-04-11
 ### Fixed
 - **Codec signal frame registry:** `SERVER_KEY_DELETE` (0x22) and `CLIENT_KEY_REQUEST` (0x23) added to `Codec.isSignalFrame()`, restoring parity with `StreamParser` and the DanProtocol v3.5 spec.
