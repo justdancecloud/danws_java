@@ -24,7 +24,7 @@ import java.util.regex.Pattern;
 
 public class DanWebSocketServer {
 
-    public enum Mode { BROADCAST, PRINCIPAL, INDIVIDUAL, SESSION_TOPIC, SESSION_PRINCIPAL_TOPIC }
+    public enum Mode { BROADCAST, PRINCIPAL, SESSION_TOPIC, SESSION_PRINCIPAL_TOPIC }
 
     private static final String BROADCAST_PRINCIPAL = "__broadcast__";
     private static final Pattern TOPIC_NAME_PATTERN = Pattern.compile("^topic\\.(\\d+)\\.name$");
@@ -79,7 +79,7 @@ public class DanWebSocketServer {
     }
 
     public DanWebSocketServer(int port, String path, Mode mode, long ttlMs, long flushIntervalMs, long maxMessageSize, int maxValueSize, long principalEvictionTtl) {
-        this.mode = (mode == Mode.INDIVIDUAL) ? Mode.PRINCIPAL : mode;
+        this.mode = mode;
         this.ttl = ttlMs;
         this.flushIntervalMs = flushIntervalMs;
         this.path = path;

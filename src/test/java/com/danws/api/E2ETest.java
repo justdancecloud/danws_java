@@ -100,8 +100,8 @@ class E2ETest {
     }
 
     @Test
-    void individualPrincipalData() throws Exception {
-        server = new DanWebSocketServer(19110, DanWebSocketServer.Mode.INDIVIDUAL);
+    void principalScopedData() throws Exception {
+        server = new DanWebSocketServer(19110, DanWebSocketServer.Mode.PRINCIPAL);
         Thread.sleep(100);
 
         server.principal("default").set("greeting", "Hello");
@@ -118,8 +118,8 @@ class E2ETest {
     }
 
     @Test
-    void individualDifferentPrincipals() throws Exception {
-        server = new DanWebSocketServer(19111, DanWebSocketServer.Mode.INDIVIDUAL);
+    void principalDifferentPrincipals() throws Exception {
+        server = new DanWebSocketServer(19111, DanWebSocketServer.Mode.PRINCIPAL);
         Thread.sleep(100);
 
         server.principal("alice").set("name", "Alice");
@@ -149,14 +149,14 @@ class E2ETest {
     }
 
     @Test
-    void individualRejectsServerSet() {
-        server = new DanWebSocketServer(19112, DanWebSocketServer.Mode.INDIVIDUAL);
+    void principalRejectsServerSet() {
+        server = new DanWebSocketServer(19112, DanWebSocketServer.Mode.PRINCIPAL);
         assertThrows(DanWSException.class, () -> server.set("key", "val"));
     }
 
     @Test
     void authReject() throws Exception {
-        server = new DanWebSocketServer(19120, DanWebSocketServer.Mode.INDIVIDUAL);
+        server = new DanWebSocketServer(19120, DanWebSocketServer.Mode.PRINCIPAL);
         Thread.sleep(100);
 
         server.enableAuthorization(true);
@@ -176,7 +176,7 @@ class E2ETest {
 
     @Test
     void sessionManagement() throws Exception {
-        server = new DanWebSocketServer(19130, DanWebSocketServer.Mode.INDIVIDUAL);
+        server = new DanWebSocketServer(19130, DanWebSocketServer.Mode.PRINCIPAL);
         Thread.sleep(100);
 
         server.enableAuthorization(true);

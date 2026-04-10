@@ -48,6 +48,10 @@ public class KeyRegistry {
 
     public int registerNew(String path, DataType type) {
         validateKeyPath(path);
+        if (nextId == Integer.MIN_VALUE) {
+            throw new com.danws.protocol.DanWSException("KEY_ID_OVERFLOW",
+                    "Exhausted 32-bit keyId space — recycle keys or restart session");
+        }
         int keyId = nextId++;
         KeyEntry entry = new KeyEntry(keyId, path, type);
         byId.put(keyId, entry);
@@ -57,6 +61,10 @@ public class KeyRegistry {
 
     /** Return the next keyId and advance the counter, without registering any entry. */
     public int nextId() {
+        if (nextId == Integer.MIN_VALUE) {
+            throw new com.danws.protocol.DanWSException("KEY_ID_OVERFLOW",
+                    "Exhausted 32-bit keyId space — recycle keys or restart session");
+        }
         return nextId++;
     }
 

@@ -491,7 +491,7 @@ class AutoFlattenE2ETest {
     // ---------------------------------------------------------------
     @Test
     void principalModeWithFlattenedObjects() throws Exception {
-        server = new DanWebSocketServer(19315, DanWebSocketServer.Mode.INDIVIDUAL);
+        server = new DanWebSocketServer(19315, DanWebSocketServer.Mode.PRINCIPAL);
         Thread.sleep(100);
 
         server.enableAuthorization(true);
