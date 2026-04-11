@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.4.5] - 2026-04-11
+### Changed
+- **`Frame` is now generic `Frame<T>`** — payload type parameter replaces raw `Object payload`. Producers use specific types (`Frame<String>` for key-registration, `Frame<byte[]>` for identify, `Frame<Void>` for signals, etc.); pipeline code routes frames as `Frame<?>`. Compile-time safety for known payload shapes while keeping full runtime flexibility. All 12 affected files updated with diamond operator + wildcard parameters; `-Xlint:unchecked` remains clean.
+- **CI workflow scope tightened**: no automatic builds on `push` — PRs + manual dispatch only. `versions/*` snapshot branches are never built.
+- **Release workflow skips tests** — tests are validated locally before tagging and by the CI workflow on PR, so the tag-push Release pipeline goes straight to build + sign + publish (5-minute end-to-end).
+
 ## [2.4.4] - 2026-04-11
 ### Removed
 - **`Mode.INDIVIDUAL`** — deleted. It was already silently aliased to `PRINCIPAL` at construction time; the enum entry was a misleading API surface. Use `Mode.PRINCIPAL` directly.
