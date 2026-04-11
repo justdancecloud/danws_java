@@ -44,7 +44,7 @@ class CodecTest {
     void serverValueFloat64() {
         Frame frame = Frame.value(0x0001, DataType.FLOAT64, 23.5);
         byte[] bytes = Codec.encode(frame);
-        List<Frame> decoded = Codec.decode(bytes);
+        List<Frame<?>> decoded = Codec.decode(bytes);
         assertEquals(1, decoded.size());
         assertEquals(23.5, (double) decoded.get(0).payload(), 0.001);
     }
@@ -68,7 +68,7 @@ class CodecTest {
     void dleEscapingInPayload() {
         Frame frame = Frame.value(0x0001, DataType.STRING, "A\u0010B");
         byte[] encoded = Codec.encode(frame);
-        List<Frame> decoded = Codec.decode(encoded);
+        List<Frame<?>> decoded = Codec.decode(encoded);
         assertEquals("A\u0010B", decoded.get(0).payload());
     }
 
@@ -77,7 +77,7 @@ class CodecTest {
         // KeyID 0x0010 — one of the 4 bytes is 0x10
         Frame frame = Frame.value(0x0010, DataType.BOOL, true);
         byte[] encoded = Codec.encode(frame);
-        List<Frame> decoded = Codec.decode(encoded);
+        List<Frame<?>> decoded = Codec.decode(encoded);
         assertEquals(0x0010, decoded.get(0).keyId());
         assertEquals(true, decoded.get(0).payload());
     }
@@ -87,19 +87,19 @@ class CodecTest {
         // Test 4-byte keyId range
         Frame frame = Frame.value(0x00ABCDEF, DataType.BOOL, true);
         byte[] encoded = Codec.encode(frame);
-        List<Frame> decoded = Codec.decode(encoded);
+        List<Frame<?>> decoded = Codec.decode(encoded);
         assertEquals(0x00ABCDEF, decoded.get(0).keyId());
     }
 
     @Test
     void batchEncodeDecode() {
-        List<Frame> frames = List.of(
+        List<Frame<?>> frames = List.of(
                 Frame.keyRegistration(0x0001, DataType.BOOL, "root.alive"),
                 Frame.keyRegistration(0x0002, DataType.STRING, "root.name"),
                 Frame.signal(FrameType.SERVER_SYNC)
         );
         byte[] batch = Codec.encodeBatch(frames);
-        List<Frame> decoded = Codec.decode(batch);
+        List<Frame<?>> decoded = Codec.decode(batch);
         assertEquals(3, decoded.size());
         assertEquals("root.alive", decoded.get(0).payload());
         assertEquals("root.name", decoded.get(1).payload());
@@ -126,7 +126,7 @@ class CodecTest {
             Object val = c[1];
             Frame frame = Frame.value(0x0001, dt, val);
             byte[] encoded = Codec.encode(frame);
-            List<Frame> decoded = Codec.decode(encoded);
+            List<Frame<?>> decoded = Codec.decode(encoded);
             assertEquals(1, decoded.size());
             if (val instanceof byte[]) {
                 assertArrayEquals((byte[]) val, (byte[]) decoded.get(0).payload());

@@ -10,7 +10,7 @@ class StreamParserTest {
     @Test
     void parseSingleFrame() {
         StreamParser parser = new StreamParser();
-        List<Frame> frames = new ArrayList<>();
+        List<Frame<?>> frames = new ArrayList<>();
         parser.onFrame(frames::add);
 
         byte[] data = Codec.encode(Frame.value(0x0001, DataType.BOOL, true));
@@ -23,7 +23,7 @@ class StreamParserTest {
     @Test
     void parseBatch() {
         StreamParser parser = new StreamParser();
-        List<Frame> frames = new ArrayList<>();
+        List<Frame<?>> frames = new ArrayList<>();
         parser.onFrame(frames::add);
 
         byte[] batch = Codec.encodeBatch(List.of(
@@ -42,7 +42,7 @@ class StreamParserTest {
     @Test
     void byteByByte() {
         StreamParser parser = new StreamParser();
-        List<Frame> frames = new ArrayList<>();
+        List<Frame<?>> frames = new ArrayList<>();
         parser.onFrame(frames::add);
 
         byte[] data = Codec.encode(Frame.value(0x0001, DataType.INT32, -42));
@@ -72,7 +72,7 @@ class StreamParserTest {
     @Test
     void interleaveHeartbeatAndFrame() {
         StreamParser parser = new StreamParser();
-        List<Frame> frames = new ArrayList<>();
+        List<Frame<?>> frames = new ArrayList<>();
         int[] hb = {0};
         parser.onFrame(frames::add);
         parser.onHeartbeat(() -> hb[0]++);
@@ -94,7 +94,7 @@ class StreamParserTest {
     @Test
     void dleEscapedPayload() {
         StreamParser parser = new StreamParser();
-        List<Frame> frames = new ArrayList<>();
+        List<Frame<?>> frames = new ArrayList<>();
         parser.onFrame(frames::add);
 
         byte[] data = Codec.encode(Frame.value(0x0001, DataType.STRING, "A\u0010B"));
@@ -107,7 +107,7 @@ class StreamParserTest {
     @Test
     void errorRecovery() {
         StreamParser parser = new StreamParser();
-        List<Frame> frames = new ArrayList<>();
+        List<Frame<?>> frames = new ArrayList<>();
         List<Exception> errors = new ArrayList<>();
         parser.onFrame(frames::add);
         parser.onError(errors::add);
@@ -126,7 +126,7 @@ class StreamParserTest {
     @Test
     void keyIdWith0x10() {
         StreamParser parser = new StreamParser();
-        List<Frame> frames = new ArrayList<>();
+        List<Frame<?>> frames = new ArrayList<>();
         parser.onFrame(frames::add);
 
         byte[] data = Codec.encode(Frame.value(0x0010, DataType.BOOL, true));

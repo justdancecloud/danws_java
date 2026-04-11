@@ -16,7 +16,7 @@ public class StreamParser {
     private int bufferLen = 0;
     private final int maxBufferSize;
 
-    private Consumer<Frame> onFrame;
+    private Consumer<Frame<?>> onFrame;
     private Runnable onHeartbeat;
     private Consumer<Exception> onError;
 
@@ -26,7 +26,7 @@ public class StreamParser {
         this.maxBufferSize = maxBufferSize > 0 ? maxBufferSize : DEFAULT_MAX_BUFFER;
     }
 
-    public void onFrame(Consumer<Frame> callback) { this.onFrame = callback; }
+    public void onFrame(Consumer<Frame<?>> callback) { this.onFrame = callback; }
     public void onHeartbeat(Runnable callback) { this.onHeartbeat = callback; }
     public void onError(Consumer<Exception> callback) { this.onError = callback; }
 
@@ -65,7 +65,7 @@ public class StreamParser {
                     if (b == ETX) {
                         try {
                             byte[] body = Arrays.copyOf(buffer, bufferLen);
-                            Frame frame = parseFrame(body);
+                            Frame<?> frame = parseFrame(body);
                             if (onFrame != null) onFrame.accept(frame);
                         } catch (Exception e) {
                             emitError(e);
@@ -91,9 +91,9 @@ public class StreamParser {
         bufferLen = 0;
     }
 
-    private Frame parseFrame(byte[] body) {
+    private Frame<?> parseFrame(byte[] body) {
         if (body.length < 6) {
-            throw new DanWSException("FRAME_PARSE_ERROR", "Frame body too short: " + body.length);
+            throw new DanWSException("FRAME_PARSE_ERROR", "Frame<?> body too short: " + body.length);
         }
 
         FrameType frameType = FrameType.fromCode(body[0] & 0xFF);
@@ -111,7 +111,7 @@ public class StreamParser {
             payload = Serializer.deserialize(dataType, rawPayload);
         }
 
-        return new Frame(frameType, keyId, dataType, payload);
+        return new Frame<>(frameType, keyId, dataType, payload);
     }
 
     private boolean isSignalFrame(FrameType ft) {
@@ -127,7 +127,7 @@ public class StreamParser {
     private void appendByte(byte b) {
         if (bufferLen == buffer.length) {
             if (buffer.length >= maxBufferSize) {
-                emitError(new DanWSException("FRAME_TOO_LARGE", "Frame exceeds " + maxBufferSize + " bytes"));
+                emitError(new DanWSException("FRAME_TOO_LARGE", "Frame<?> exceeds " + maxBufferSize + " bytes"));
                 bufferLen = 0;
                 state = State.IDLE;
                 return;

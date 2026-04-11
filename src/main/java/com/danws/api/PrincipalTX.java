@@ -13,11 +13,11 @@ public class PrincipalTX {
     private final String name;
     private final KeyRegistry registry = new KeyRegistry();
     private final Map<Integer, Object> store = new HashMap<>();
-    private Consumer<Frame> onValueSet;
+    private Consumer<Frame<?>> onValueSet;
     private Runnable onKeysChanged;
     private TriConsumer<Frame, Frame, Frame> onIncrementalKey;
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
-    private List<Frame> cachedKeyFrames = null;
+    private List<Frame<?>> cachedKeyFrames = null;
     private final Map<String, List<Object>> previousArrays = new HashMap<>();
     private static final int FREED_POOL_CAP = 10_000;
     private final List<Integer> freedKeyIds = new ArrayList<>();
@@ -46,7 +46,7 @@ public class PrincipalTX {
 
     public String name() { return name; }
 
-    void setOnValue(Consumer<Frame> fn) { this.onValueSet = fn; }
+    void setOnValue(Consumer<Frame<?>> fn) { this.onValueSet = fn; }
     void setOnResync(Runnable fn) { this.onKeysChanged = fn; }
     void setOnIncremental(TriConsumer<Frame, Frame, Frame> fn) { this.onIncrementalKey = fn; }
 
@@ -82,9 +82,9 @@ public class PrincipalTX {
             public DataType getType(String key) { var e = registry.getByPath(key); return e != null ? e.type() : null; }
             public void setStoreValue(String key, Object value) { var e = registry.getByPath(key); if (e != null) store.put(e.keyId(), value); }
             public void setLeaf(String key, Object value) { PrincipalTX.this.setLeaf(key, value); }
-            public void enqueue(Frame frame) {
+            public void enqueue(Frame<?> frame) {
                 // Defer the enqueue to after lock release
-                Consumer<Frame> cb = onValueSet;
+                Consumer<Frame<?>> cb = onValueSet;
                 if (cb != null) deferred.add(() -> cb.accept(frame));
             }
             public void setFlattenedKeys(String key, Set<String> keys) { flattenedKeys.put(key, keys); }
@@ -101,9 +101,9 @@ public class PrincipalTX {
             store.remove(entry.keyId());
             if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(entry.keyId());
             cachedKeyFrames = null;
-            Consumer<Frame> cb = onValueSet;
+            Consumer<Frame<?>> cb = onValueSet;
             if (cb != null) {
-                Frame deleteFrame = Frame.keyDelete(entry.keyId());
+                Frame<?> deleteFrame = Frame.keyDelete(entry.keyId());
                 deferred.add(() -> cb.accept(deleteFrame));
             }
         }
@@ -128,9 +128,9 @@ public class PrincipalTX {
             cachedKeyFrames = null;
             TriConsumer<Frame, Frame, Frame> incCb = onIncrementalKey;
             if (incCb != null) {
-                Frame regFrame = Frame.keyRegistration(keyId, newType, key);
-                Frame syncFrame = Frame.signal(FrameType.SERVER_SYNC);
-                Frame valFrame = Frame.value(keyId, newType, value);
+                Frame<?> regFrame = Frame.keyRegistration(keyId, newType, key);
+                Frame<?> syncFrame = Frame.signal(FrameType.SERVER_SYNC);
+                Frame<?> valFrame = Frame.value(keyId, newType, value);
                 deferred.add(() -> incCb.accept(regFrame, syncFrame, valFrame));
             } else {
                 // triggerResync deferred
@@ -149,9 +149,9 @@ public class PrincipalTX {
             store.remove(existing.keyId());
             if (freedKeyIds.size() < FREED_POOL_CAP) freedKeyIds.add(existing.keyId());
             cachedKeyFrames = null;
-            Consumer<Frame> valCb = onValueSet;
+            Consumer<Frame<?>> valCb = onValueSet;
             if (valCb != null) {
-                Frame deleteFrame = Frame.keyDelete(existing.keyId());
+                Frame<?> deleteFrame = Frame.keyDelete(existing.keyId());
                 deferred.add(() -> valCb.accept(deleteFrame));
             }
             int keyId = allocateKeyId();
@@ -159,9 +159,9 @@ public class PrincipalTX {
             store.put(keyId, value);
             TriConsumer<Frame, Frame, Frame> incCb = onIncrementalKey;
             if (incCb != null) {
-                Frame regFrame = Frame.keyRegistration(keyId, newType, key);
-                Frame syncFrame = Frame.signal(FrameType.SERVER_SYNC);
-                Frame valFrame = Frame.value(keyId, newType, value);
+                Frame<?> regFrame = Frame.keyRegistration(keyId, newType, key);
+                Frame<?> syncFrame = Frame.signal(FrameType.SERVER_SYNC);
+                Frame<?> valFrame = Frame.value(keyId, newType, value);
                 deferred.add(() -> incCb.accept(regFrame, syncFrame, valFrame));
             } else {
                 cachedKeyFrames = null;
@@ -176,9 +176,9 @@ public class PrincipalTX {
         if (Objects.equals(store.get(existing.keyId()), value)) return;
 
         store.put(existing.keyId(), value);
-        Consumer<Frame> valCb = onValueSet;
+        Consumer<Frame<?>> valCb = onValueSet;
         if (valCb != null) {
-            Frame valFrame = Frame.value(existing.keyId(), existing.type(), value);
+            Frame<?> valFrame = Frame.value(existing.keyId(), existing.type(), value);
             deferred.add(() -> valCb.accept(valFrame));
         }
     }
@@ -260,11 +260,11 @@ public class PrincipalTX {
         deferred.clear();
     }
 
-    List<Frame> buildKeyFrames() {
+    List<Frame<?>> buildKeyFrames() {
         rwLock.readLock().lock();
         try {
             if (cachedKeyFrames != null) return cachedKeyFrames;
-            List<Frame> frames = new ArrayList<>();
+            List<Frame<?>> frames = new ArrayList<>();
             for (KeyEntry entry : registry.entries()) {
                 frames.add(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
             }
@@ -277,10 +277,10 @@ public class PrincipalTX {
         }
     }
 
-    List<Frame> buildValueFrames() {
+    List<Frame<?>> buildValueFrames() {
         rwLock.readLock().lock();
         try {
-            List<Frame> frames = new ArrayList<>();
+            List<Frame<?>> frames = new ArrayList<>();
             for (KeyEntry entry : registry.entries()) {
                 Object val = store.get(entry.keyId());
                 if (val != null) {
@@ -294,13 +294,13 @@ public class PrincipalTX {
     }
 
     /** Single-pass build of both key and value frames, avoiding double iteration of the registry. */
-    record AllFrames(List<Frame> keyFrames, List<Frame> valueFrames) {}
+    record AllFrames(List<Frame<?>> keyFrames, List<Frame<?>> valueFrames) {}
 
     AllFrames buildAllFrames() {
         rwLock.readLock().lock();
         try {
-            List<Frame> keyFrames = new ArrayList<>();
-            List<Frame> valueFrames = new ArrayList<>();
+            List<Frame<?>> keyFrames = new ArrayList<>();
+            List<Frame<?>> valueFrames = new ArrayList<>();
             for (KeyEntry entry : registry.entries()) {
                 keyFrames.add(Frame.keyRegistration(entry.keyId(), entry.type(), entry.path()));
                 Object val = store.get(entry.keyId());
@@ -320,15 +320,15 @@ public class PrincipalTX {
      * O(1) lookup for a specific keyId. Returns key registration + value frames,
      * or null if not found. Uses KeyRegistry's HashMap-backed getByKeyId.
      */
-    Frame[] getFramesByKeyId(int keyId) {
+    Frame<?>[] getFramesByKeyId(int keyId) {
         rwLock.readLock().lock();
         try {
             KeyEntry entry = registry.getByKeyId(keyId);
             if (entry == null) return null;
-            Frame keyFrame = Frame.keyRegistration(entry.keyId(), entry.type(), entry.path());
+            Frame<?> keyFrame = Frame.keyRegistration(entry.keyId(), entry.type(), entry.path());
             Object val = store.get(entry.keyId());
-            Frame valueFrame = val != null ? Frame.value(entry.keyId(), entry.type(), val) : null;
-            return new Frame[]{ keyFrame, valueFrame };
+            Frame<?> valueFrame = val != null ? Frame.value(entry.keyId(), entry.type(), val) : null;
+            return new Frame<?>[]{ keyFrame, valueFrame };
         } finally {
             rwLock.readLock().unlock();
         }

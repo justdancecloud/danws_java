@@ -216,7 +216,7 @@ public class DanWebSocketServer {
         InternalSession internal = tmpSessions.remove(clientUuid);
         if (internal == null) return;
         // Send AUTH_FAIL directly (bypass BulkQueue to ensure delivery before close)
-        byte[] encoded = Codec.encode(new Frame(FrameType.AUTH_FAIL, 0, DataType.STRING, reason != null ? reason : "Rejected"));
+        byte[] encoded = Codec.encode(new Frame<>(FrameType.AUTH_FAIL, 0, DataType.STRING, reason != null ? reason : "Rejected"));
         sendBytes(internal.ch, encoded);
         if (internal.ch != null) {
             internal.ch.eventLoop().schedule(() -> internal.ch.close(), 100, TimeUnit.MILLISECONDS);
@@ -517,7 +517,7 @@ public class DanWebSocketServer {
 
     // ---- Client topic frame handling ----
 
-    private void handleClientTopicFrame(InternalSession internal, Frame frame) {
+    private void handleClientTopicFrame(InternalSession internal, Frame<?> frame) {
         switch (frame.frameType()) {
             case CLIENT_RESET -> {
                 if (internal.clientRegistry != null) internal.clientRegistry.clear();

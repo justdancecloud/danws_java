@@ -11,7 +11,7 @@ public final class Codec {
 
     private Codec() {}
 
-    public static byte[] encode(Frame frame) {
+    public static byte[] encode(Frame<?> frame) {
         byte[] rawPayload;
         if (isKeyRegistrationFrame(frame.frameType())) {
             rawPayload = Serializer.serialize(DataType.STRING, frame.payload());
@@ -71,9 +71,9 @@ public final class Codec {
         return pos;
     }
 
-    public static byte[] encodeBatch(List<Frame> frames) {
+    public static byte[] encodeBatch(List<Frame<?>> frames) {
         ByteArrayOutputStream out = new ByteArrayOutputStream(frames.size() * 16);
-        for (Frame f : frames) {
+        for (Frame<?> f : frames) {
             byte[] encoded = encode(f);
             out.write(encoded, 0, encoded.length);
         }
@@ -84,8 +84,8 @@ public final class Codec {
         return new byte[]{DLE_BYTE, ENQ};
     }
 
-    public static List<Frame> decode(byte[] bytes) {
-        List<Frame> frames = new ArrayList<>();
+    public static List<Frame<?>> decode(byte[] bytes) {
+        List<Frame<?>> frames = new ArrayList<>();
         int i = 0;
 
         while (i < bytes.length) {
@@ -111,7 +111,7 @@ public final class Codec {
             if (bodyEnd == -1) throw new DanWSException("FRAME_PARSE_ERROR", "Missing DLE ETX");
 
             byte[] body = DLE.decode(Arrays.copyOfRange(bytes, bodyStart, bodyEnd));
-            if (body.length < 6) throw new DanWSException("FRAME_PARSE_ERROR", "Frame body too short: " + body.length);
+            if (body.length < 6) throw new DanWSException("FRAME_PARSE_ERROR", "Frame<?> body too short: " + body.length);
 
             FrameType frameType = FrameType.fromCode(body[0] & 0xFF);
             int keyId = ((body[1] & 0xFF) << 24) | ((body[2] & 0xFF) << 16) | ((body[3] & 0xFF) << 8) | (body[4] & 0xFF);
@@ -127,7 +127,7 @@ public final class Codec {
                 payload = Serializer.deserialize(dataType, rawPayload);
             }
 
-            frames.add(new Frame(frameType, keyId, dataType, payload));
+            frames.add(new Frame<>(frameType, keyId, dataType, payload));
         }
 
         return frames;

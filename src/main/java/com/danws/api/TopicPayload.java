@@ -18,7 +18,7 @@ public class TopicPayload {
     private final int index;
     private final IntSupplier allocateKeyId;
     private final IntConsumer freeKeyId;
-    private Consumer<Frame> enqueue;
+    private Consumer<Frame<?>> enqueue;
     private Runnable onResync;
     private final Map<String, Set<String>> flattenedKeys = new HashMap<>();
     private final Map<String, String> wirePathCache = new HashMap<>();
@@ -43,7 +43,7 @@ public class TopicPayload {
         this.maxValueSize = maxValueSize;
     }
 
-    void bind(Consumer<Frame> enqueue, Runnable onResync) {
+    void bind(Consumer<Frame<?>> enqueue, Runnable onResync) {
         this.enqueue = enqueue;
         this.onResync = onResync;
     }
@@ -71,9 +71,9 @@ public class TopicPayload {
         if (removed != null) {
             keyIdToPath.remove(removed.keyId());
             freeKeyId.accept(removed.keyId());
-            Consumer<Frame> enq = enqueue;
+            Consumer<Frame<?>> enq = enqueue;
             if (enq != null) {
-                Frame deleteFrame = Frame.keyDelete(removed.keyId());
+                Frame<?> deleteFrame = Frame.keyDelete(removed.keyId());
                 deferred.add(() -> enq.accept(deleteFrame));
             }
         }
@@ -90,8 +90,8 @@ public class TopicPayload {
                 if (e != null) entries.put(key, new Entry(e.keyId(), DataType.detect(value), value));
             }
             public void setLeaf(String key, Object value) { setLeafDirect(key, value); }
-            public void enqueue(Frame frame) {
-                Consumer<Frame> enq = TopicPayload.this.enqueue;
+            public void enqueue(Frame<?> frame) {
+                Consumer<Frame<?>> enq = TopicPayload.this.enqueue;
                 if (enq != null) deferred.add(() -> enq.accept(frame));
             }
             public void setFlattenedKeys(String key, Set<String> keys) { flattenedKeys.put(key, keys); }
@@ -115,12 +115,12 @@ public class TopicPayload {
             int keyId = allocateKeyId.getAsInt();
             entries.put(key, new Entry(keyId, newType, value));
             keyIdToPath.put(keyId, key);
-            Consumer<Frame> enq = enqueue;
+            Consumer<Frame<?>> enq = enqueue;
             if (enq != null) {
                 String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
-                Frame regFrame = Frame.keyRegistration(keyId, newType, wirePath);
-                Frame syncFrame = Frame.signal(FrameType.SERVER_SYNC);
-                Frame valFrame = Frame.value(keyId, newType, value);
+                Frame<?> regFrame = Frame.keyRegistration(keyId, newType, wirePath);
+                Frame<?> syncFrame = Frame.signal(FrameType.SERVER_SYNC);
+                Frame<?> valFrame = Frame.value(keyId, newType, value);
                 deferred.add(() -> {
                     enq.accept(regFrame);
                     enq.accept(syncFrame);
@@ -134,9 +134,9 @@ public class TopicPayload {
             // Type changed — delete old + re-register
             keyIdToPath.remove(existing.keyId());
             freeKeyId.accept(existing.keyId());
-            Consumer<Frame> enq = enqueue;
+            Consumer<Frame<?>> enq = enqueue;
             if (enq != null) {
-                Frame deleteFrame = Frame.keyDelete(existing.keyId());
+                Frame<?> deleteFrame = Frame.keyDelete(existing.keyId());
                 deferred.add(() -> enq.accept(deleteFrame));
             }
             int keyId = allocateKeyId.getAsInt();
@@ -144,9 +144,9 @@ public class TopicPayload {
             keyIdToPath.put(keyId, key);
             if (enq != null) {
                 String wirePath = wirePathCache.computeIfAbsent(key, k -> "t." + index + "." + k);
-                Frame regFrame = Frame.keyRegistration(keyId, newType, wirePath);
-                Frame syncFrame = Frame.signal(FrameType.SERVER_SYNC);
-                Frame valFrame = Frame.value(keyId, newType, value);
+                Frame<?> regFrame = Frame.keyRegistration(keyId, newType, wirePath);
+                Frame<?> syncFrame = Frame.signal(FrameType.SERVER_SYNC);
+                Frame<?> valFrame = Frame.value(keyId, newType, value);
                 deferred.add(() -> {
                     enq.accept(regFrame);
                     enq.accept(syncFrame);
@@ -159,9 +159,9 @@ public class TopicPayload {
         if (Objects.equals(existing.value(), value)) return;
 
         entries.put(key, new Entry(existing.keyId(), existing.type(), value));
-        Consumer<Frame> enq = enqueue;
+        Consumer<Frame<?>> enq = enqueue;
         if (enq != null) {
-            Frame valFrame = Frame.value(existing.keyId(), existing.type(), value);
+            Frame<?> valFrame = Frame.value(existing.keyId(), existing.type(), value);
             deferred.add(() -> enq.accept(valFrame));
         }
     }
@@ -203,9 +203,9 @@ public class TopicPayload {
                     if (e != null) {
                         keyIdToPath.remove(e.keyId());
                         freeKeyId.accept(e.keyId());
-                        Consumer<Frame> enq = enqueue;
+                        Consumer<Frame<?>> enq = enqueue;
                         if (enq != null) {
-                            Frame deleteFrame = Frame.keyDelete(e.keyId());
+                            Frame<?> deleteFrame = Frame.keyDelete(e.keyId());
                             deferred.add(() -> enq.accept(deleteFrame));
                         }
                     }
@@ -219,9 +219,9 @@ public class TopicPayload {
                     wirePathCache.remove(key);
                     previousArrays.remove(key);
                     freeKeyId.accept(e.keyId());
-                    Consumer<Frame> enq = enqueue;
+                    Consumer<Frame<?>> enq = enqueue;
                     if (enq != null) {
-                        Frame deleteFrame = Frame.keyDelete(e.keyId());
+                        Frame<?> deleteFrame = Frame.keyDelete(e.keyId());
                         deferred.add(() -> enq.accept(deleteFrame));
                     }
                 }
@@ -261,10 +261,10 @@ public class TopicPayload {
         }
     }
 
-    List<Frame> buildKeyFrames() {
+    List<Frame<?>> buildKeyFrames() {
         rwLock.readLock().lock();
         try {
-            List<Frame> frames = new ArrayList<>();
+            List<Frame<?>> frames = new ArrayList<>();
             for (var e : entries.entrySet()) {
                 String wirePath = resolveWirePath(e.getKey());
                 frames.add(Frame.keyRegistration(e.getValue().keyId(), e.getValue().type(), wirePath));
@@ -275,10 +275,10 @@ public class TopicPayload {
         }
     }
 
-    List<Frame> buildValueFrames() {
+    List<Frame<?>> buildValueFrames() {
         rwLock.readLock().lock();
         try {
-            List<Frame> frames = new ArrayList<>();
+            List<Frame<?>> frames = new ArrayList<>();
             for (var e : entries.values()) {
                 if (e.value() != null) {
                     frames.add(Frame.value(e.keyId(), e.type(), e.value()));
@@ -291,13 +291,13 @@ public class TopicPayload {
     }
 
     /** Single-pass build of both key and value frames, avoiding double iteration. */
-    record AllFrames(List<Frame> keyFrames, List<Frame> valueFrames) {}
+    record AllFrames(List<Frame<?>> keyFrames, List<Frame<?>> valueFrames) {}
 
     AllFrames buildAllFrames() {
         rwLock.readLock().lock();
         try {
-            List<Frame> keyFrames = new ArrayList<>();
-            List<Frame> valueFrames = new ArrayList<>();
+            List<Frame<?>> keyFrames = new ArrayList<>();
+            List<Frame<?>> valueFrames = new ArrayList<>();
             for (var e : entries.entrySet()) {
                 String wirePath = resolveWirePath(e.getKey());
                 keyFrames.add(Frame.keyRegistration(e.getValue().keyId(), e.getValue().type(), wirePath));
@@ -315,7 +315,7 @@ public class TopicPayload {
      * O(1) lookup: returns key registration + value frames for a specific keyId,
      * or null if not found. Uses the keyIdToPath reverse index.
      */
-    Frame[] getFramesByKeyId(int keyId) {
+    Frame<?>[] getFramesByKeyId(int keyId) {
         rwLock.readLock().lock();
         try {
             String path = keyIdToPath.get(keyId);
@@ -323,11 +323,11 @@ public class TopicPayload {
             Entry e = entries.get(path);
             if (e == null) return null;
             String wirePath = resolveWirePath(path);
-            Frame keyFrame = Frame.keyRegistration(e.keyId(), e.type(), wirePath);
-            Frame valueFrame = e.value() != null
+            Frame<?> keyFrame = Frame.keyRegistration(e.keyId(), e.type(), wirePath);
+            Frame<?> valueFrame = e.value() != null
                     ? Frame.value(e.keyId(), e.type(), e.value())
                     : null;
-            return new Frame[]{ keyFrame, valueFrame };
+            return new Frame<?>[]{ keyFrame, valueFrame };
         } finally {
             rwLock.readLock().unlock();
         }

@@ -72,7 +72,7 @@ public class DanWebSocketClient {
 
     private final KeyRegistry registry = new KeyRegistry();
     private final Map<Integer, Object> store = new ConcurrentHashMap<>();
-    private final Map<Integer, Frame> pendingValues = new ConcurrentHashMap<>();
+    private final Map<Integer, Frame<?>> pendingValues = new ConcurrentHashMap<>();
     private final StreamParser parser = new StreamParser(); // reuse instance
 
     // Topic state — accessed from both user threads (subscribe/topic/setParams)
@@ -202,7 +202,7 @@ public class DanWebSocketClient {
     }
 
     public void authorize(String token) {
-        sendFrame(new Frame(FrameType.AUTH, 0, DataType.STRING, token));
+        sendFrame(new Frame<>(FrameType.AUTH, 0, DataType.STRING, token));
         state = State.AUTHORIZING;
     }
 
@@ -333,7 +333,7 @@ public class DanWebSocketClient {
         System.arraycopy(uuid, 0, payload, 0, 16);
         payload[16] = PROTOCOL_MAJOR;
         payload[17] = PROTOCOL_MINOR;
-        sendFrame(new Frame(FrameType.IDENTIFY, 0, DataType.BINARY, payload));
+        sendFrame(new Frame<>(FrameType.IDENTIFY, 0, DataType.BINARY, payload));
         onConnect.forEach(Runnable::run);
     }
 
@@ -351,7 +351,7 @@ public class DanWebSocketClient {
         }
     }
 
-    private void handleFrame(Frame frame) {
+    private void handleFrame(Frame<?> frame) {
         switch (frame.frameType()) {
             case AUTH_OK -> state = State.SYNCHRONIZING;
             case AUTH_FAIL -> {
@@ -366,7 +366,7 @@ public class DanWebSocketClient {
                 if (state == State.IDENTIFYING) state = State.SYNCHRONIZING;
                 registry.registerOne(frame.keyId(), (String) frame.payload(), frame.dataType());
                 // Apply any pending value that arrived before this key was registered
-                Frame pending = pendingValues.remove(frame.keyId());
+                Frame<?> pending = pendingValues.remove(frame.keyId());
                 if (pending != null) {
                     store.put(frame.keyId(), pending.payload());
                     String keyPath = (String) frame.payload();
@@ -397,7 +397,7 @@ public class DanWebSocketClient {
             case SERVER_VALUE -> {
                 if (!registry.hasKeyId(frame.keyId())) {
                     // Request only this specific key instead of full resync
-                    sendFrame(new Frame(FrameType.CLIENT_KEY_REQUEST, frame.keyId(), DataType.NULL, null));
+                    sendFrame(new Frame<>(FrameType.CLIENT_KEY_REQUEST, frame.keyId(), DataType.NULL, null));
                     // Buffer the value — it will be applied after key info arrives
                     pendingValues.put(frame.keyId(), frame);
                     return;
@@ -604,15 +604,15 @@ public class DanWebSocketClient {
 
         sendFrame(Frame.signal(FrameType.CLIENT_RESET));
         for (int i = 0; i < paths.size(); i++) {
-            sendFrame(new Frame(FrameType.CLIENT_KEY_REGISTRATION, i + 1, types.get(i), paths.get(i)));
+            sendFrame(new Frame<>(FrameType.CLIENT_KEY_REGISTRATION, i + 1, types.get(i), paths.get(i)));
         }
         for (int i = 0; i < values.size(); i++) {
-            sendFrame(new Frame(FrameType.CLIENT_VALUE, i + 1, types.get(i), values.get(i)));
+            sendFrame(new Frame<>(FrameType.CLIENT_VALUE, i + 1, types.get(i), values.get(i)));
         }
         sendFrame(Frame.signal(FrameType.CLIENT_SYNC));
     }
 
-    private void sendFrame(Frame frame) {
+    private void sendFrame(Frame<?> frame) {
         sendRaw(Codec.encode(frame));
     }
 

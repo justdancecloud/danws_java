@@ -23,7 +23,7 @@ public class BulkQueue {
     private final BiConsumer<String, Exception> log;
 
     private final EventLoop eventLoop;
-    private final List<Frame> queue = new ArrayList<>();
+    private final List<Frame<?>> queue = new ArrayList<>();
     private final Map<Integer, Integer> valueDedupIndex = new HashMap<>();
     private Consumer<byte[]> onFlush;
     private ScheduledFuture<?> flushTask;
@@ -58,7 +58,7 @@ public class BulkQueue {
         }
     }
 
-    public void enqueue(Frame frame) {
+    public void enqueue(Frame<?> frame) {
         if (eventLoop.inEventLoop()) {
             doEnqueue(frame);
         } else {
@@ -66,7 +66,7 @@ public class BulkQueue {
         }
     }
 
-    private void doEnqueue(Frame frame) {
+    private void doEnqueue(Frame<?> frame) {
         if (disposed) return;
 
         if (frame.frameType() == FrameType.SERVER_RESET) {
@@ -88,7 +88,7 @@ public class BulkQueue {
     private void flush() {
         if (queue.isEmpty() || onFlush == null) return;
 
-        List<Frame> batch = new ArrayList<>(queue);
+        List<Frame<?>> batch = new ArrayList<>(queue);
         queue.clear();
         valueDedupIndex.clear();
 

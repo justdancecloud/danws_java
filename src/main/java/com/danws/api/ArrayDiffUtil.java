@@ -130,7 +130,7 @@ final class ArrayDiffUtil {
         /** Set a leaf key-value (sends frame if changed, creates if new). */
         void setLeaf(String key, Object value);
         /** Enqueue a frame for sending. */
-        void enqueue(Frame frame);
+        void enqueue(Frame<?> frame);
         /** Update the flattenedKeys set for a prefix. */
         void setFlattenedKeys(String key, Set<String> keys);
         /** Update the previousArrays cache. */
@@ -144,7 +144,7 @@ final class ArrayDiffUtil {
         // 1. Send ARRAY_SHIFT_LEFT frame
         int lengthKeyId = ctx.getKeyId(key + ".length");
         if (lengthKeyId >= 0) {
-            ctx.enqueue(new Frame(FrameType.ARRAY_SHIFT_LEFT, lengthKeyId, DataType.INT32, shiftCount));
+            ctx.enqueue(new Frame<>(FrameType.ARRAY_SHIFT_LEFT, lengthKeyId, DataType.INT32, shiftCount));
         }
 
         // 2. Silently update internal store for shifted indices (low to high)
@@ -168,7 +168,7 @@ final class ArrayDiffUtil {
         if (lengthKeyId >= 0) {
             DataType lenType = ctx.getType(key + ".length");
             ctx.setStoreValue(key + ".length", newLen);
-            ctx.enqueue(new Frame(FrameType.SERVER_VALUE, lengthKeyId, lenType != null ? lenType : DataType.INT32, newLen));
+            ctx.enqueue(new Frame<>(FrameType.SERVER_VALUE, lengthKeyId, lenType != null ? lenType : DataType.INT32, newLen));
         }
 
         // 5. Update flattenedKeys + previousArrays
@@ -183,7 +183,7 @@ final class ArrayDiffUtil {
         // 1. Send ARRAY_SHIFT_RIGHT frame
         int lengthKeyId = ctx.getKeyId(key + ".length");
         if (lengthKeyId >= 0) {
-            ctx.enqueue(new Frame(FrameType.ARRAY_SHIFT_RIGHT, lengthKeyId, DataType.INT32, shiftCount));
+            ctx.enqueue(new Frame<>(FrameType.ARRAY_SHIFT_RIGHT, lengthKeyId, DataType.INT32, shiftCount));
         }
 
         // 2. Update internal store for shifted indices (high to low)
