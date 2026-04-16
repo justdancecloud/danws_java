@@ -175,6 +175,42 @@ class E2ETest {
     }
 
     @Test
+    void authTimeoutClosesUnauthenticatedSocket() throws Exception {
+        server = new DanWebSocketServer(19126, DanWebSocketServer.Mode.PRINCIPAL);
+        Thread.sleep(100);
+        server.enableAuthorization(true, 500);
+        server.onAuthorize((uuid, token) -> server.authorize(uuid, token, "alice"));
+
+        DanWebSocketClient client = makeClient(19126);
+        // Intentionally do NOT call client.authorize() — simulate stuck client
+
+        CountDownLatch disconnected = new CountDownLatch(1);
+        client.onDisconnect(disconnected::countDown);
+        client.connect();
+
+        // authTimeout = 500ms → socket must be closed by ~1s
+        assertTrue(disconnected.await(3, TimeUnit.SECONDS),
+                "server did not enforce authTimeout on unauthenticated socket");
+    }
+
+    @Test
+    void onAuthorizeCallbackThrowStillEnforcesTimeout() throws Exception {
+        server = new DanWebSocketServer(19127, DanWebSocketServer.Mode.PRINCIPAL);
+        Thread.sleep(100);
+        server.enableAuthorization(true, 500);
+        server.onAuthorize((uuid, token) -> { throw new RuntimeException("boom"); });
+
+        DanWebSocketClient client = makeClient(19127);
+        CountDownLatch disconnected = new CountDownLatch(1);
+        client.onConnect(() -> client.authorize("t"));
+        client.onDisconnect(disconnected::countDown);
+        client.connect();
+
+        assertTrue(disconnected.await(3, TimeUnit.SECONDS),
+                "tmpSession leaked when onAuthorize callback threw");
+    }
+
+    @Test
     void authorizeRejectsNullPrincipal() throws Exception {
         server = new DanWebSocketServer(19125, DanWebSocketServer.Mode.PRINCIPAL);
         Thread.sleep(100);

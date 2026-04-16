@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.4.7] - 2026-04-16
+### Fixed
+- **`authTimeout` was dead code — unauthenticated sockets leaked (DoS).** `enableAuthorization(enabled, timeoutMs)` stored the timeout value but no code ever read it, so clients that opened a WebSocket and never sent AUTH accumulated in `tmpSessions` indefinitely. An attacker could exhaust memory/connection slots by holding auth-stalled sockets. `authTimeout` is now enforced by a per-session scheduled watchdog that closes the channel, disposes the bulk queue/heartbeat, and evicts the `tmpSessions` entry if AUTH has not completed in time. Same mechanism also recovers sessions whose `onAuthorize` callback threw. Parity with the TypeScript server, which already enforced this.
+
 ## [2.4.6] - 2026-04-16
 ### Fixed
 - **`authorize()` NPE when principal is null.** Calling `server.authorize(uuid, token, null)` — a common mis-pattern used to try to reject a bad token — threw `NullPointerException` deep inside `ConcurrentHashMap` via Netty's `channelRead0`, surfacing as a confusing "Netty error" in application logs. `authorize()` now validates up-front and throws `IllegalArgumentException` with a clear message pointing at the correct API: `server.reject(clientUuid, reason)`.

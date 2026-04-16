@@ -209,6 +209,7 @@ public class DanWebSocketServer {
         }
         InternalSession internal = tmpSessions.remove(clientUuid);
         if (internal == null) return;
+        cancelAuthTimeout(internal);
 
         internal.session.authorize(principal);
         internal.bulkQueue.enqueue(Frame.signal(FrameType.AUTH_OK));
@@ -219,6 +220,7 @@ public class DanWebSocketServer {
     public void reject(String clientUuid, String reason) {
         InternalSession internal = tmpSessions.remove(clientUuid);
         if (internal == null) return;
+        cancelAuthTimeout(internal);
         // Send AUTH_FAIL directly (bypass BulkQueue to ensure delivery before close)
         byte[] encoded = Codec.encode(new Frame<>(FrameType.AUTH_FAIL, 0, DataType.STRING, reason != null ? reason : "Rejected"));
         sendBytes(internal.ch, encoded);
@@ -257,6 +259,12 @@ public class DanWebSocketServer {
             }
         }
         sessions.clear();
+        for (InternalSession i : tmpSessions.values()) {
+            if (i.authTimeoutFuture != null) i.authTimeoutFuture.cancel(false);
+            if (i.heartbeat != null) i.heartbeat.stop();
+            if (i.bulkQueue != null) i.bulkQueue.dispose();
+            if (i.ch != null && i.ch.isActive()) { try { i.ch.close(); } catch (Exception ignored) {} }
+        }
         tmpSessions.clear();
         principalIndex.clear();
         for (ScheduledFuture<?> timer : principalEvictionTimers.values()) timer.cancel(false);
@@ -469,6 +477,7 @@ public class DanWebSocketServer {
             if (authEnabled) {
                 tmpSessions.put(uuid, existing);
                 sessions.remove(uuid);
+                scheduleAuthTimeout(uuid, existing);
             } else {
                 String p = existing.session.principal() != null ? existing.session.principal()
                         : (mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : "default");
@@ -495,6 +504,7 @@ public class DanWebSocketServer {
 
         if (authEnabled) {
             tmpSessions.put(uuid, internal);
+            scheduleAuthTimeout(uuid, internal);
         } else {
             String defaultPrincipal = mode == Mode.BROADCAST ? BROADCAST_PRINCIPAL : "default";
             session.authorize(defaultPrincipal);
@@ -618,7 +628,11 @@ public class DanWebSocketServer {
 
     private void handleSessionDisconnect(String uuid) {
         InternalSession internal = sessions.get(uuid);
-        if (internal == null) { tmpSessions.remove(uuid); return; }
+        if (internal == null) {
+            InternalSession tmp = tmpSessions.remove(uuid);
+            if (tmp != null) cancelAuthTimeout(tmp);
+            return;
+        }
         if (!internal.session.connected()) return;
 
         internal.session.disposeAllTopicHandles();
@@ -663,6 +677,34 @@ public class DanWebSocketServer {
         }
     }
 
+    /**
+     * Schedule a watchdog that closes the underlying socket and evicts the
+     * tmpSession if the client has not completed AUTH within {@code authTimeout}.
+     * Prevents unauthenticated sockets from accumulating indefinitely (DoS).
+     */
+    private void scheduleAuthTimeout(String uuid, InternalSession internal) {
+        if (authTimeout <= 0) return;
+        cancelAuthTimeout(internal);
+        Channel ch = internal.ch;
+        EventLoop loop = (ch != null) ? ch.eventLoop() : workerGroup.next();
+        internal.authTimeoutFuture = loop.schedule(() -> {
+            InternalSession removed = tmpSessions.remove(uuid);
+            if (removed == null) return; // already authorized/rejected
+            log("Auth timeout after " + authTimeout + "ms — closing socket uuid=" + uuid, null);
+            removed.authTimeoutFuture = null;
+            if (removed.heartbeat != null) removed.heartbeat.stop();
+            if (removed.bulkQueue != null) removed.bulkQueue.dispose();
+            if (removed.ch != null && removed.ch.isActive()) {
+                try { removed.ch.close(); } catch (Exception ignored) {}
+            }
+        }, authTimeout, TimeUnit.MILLISECONDS);
+    }
+
+    private void cancelAuthTimeout(InternalSession internal) {
+        ScheduledFuture<?> f = internal.authTimeoutFuture;
+        if (f != null) { f.cancel(false); internal.authTimeoutFuture = null; }
+    }
+
     private static void sendBytes(Channel ch, byte[] data) {
         if (ch != null && ch.isActive()) {
             ByteBuf buf = ch.alloc().buffer(data.length);
@@ -683,6 +725,7 @@ public class DanWebSocketServer {
         BulkQueue bulkQueue;
         HeartbeatManager heartbeat;
         ScheduledFuture<?> ttlFuture;
+        ScheduledFuture<?> authTimeoutFuture;
         KeyRegistry clientRegistry;
         Map<Integer, Object> clientValues;
 
