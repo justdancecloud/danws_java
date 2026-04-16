@@ -88,7 +88,7 @@ Requires **Java 17+**.
 
 ```groovy
 dependencies {
-    implementation 'io.github.justdancecloud:dan-websocket:2.4.0'
+    implementation 'io.github.justdancecloud:dan-websocket:2.4.9'
 }
 ```
 
@@ -98,9 +98,32 @@ dependencies {
 <dependency>
     <groupId>io.github.justdancecloud</groupId>
     <artifactId>dan-websocket</artifactId>
-    <version>2.4.0</version>
+    <version>2.4.9</version>
 </dependency>
 ```
+
+### Spring Boot — Netty 버전 충돌 해결
+
+dan-websocket은 Netty **4.2.12.Final**을 사용합니다. Spring Boot가 관리하는 Netty 버전과 충돌할 수 있으므로, `pom.xml`에 다음을 추가하세요:
+
+```xml
+<properties>
+    <java.version>17</java.version>
+    <netty.version>4.2.12.Final</netty.version>
+</properties>
+```
+
+`netty-all`을 명시적으로 선언하면 Spring Boot의 Netty BOM을 오버라이드합니다:
+
+```xml
+<dependency>
+    <groupId>io.netty</groupId>
+    <artifactId>netty-all</artifactId>
+    <version>${netty.version}</version>
+</dependency>
+```
+
+> Gradle의 경우 `ext['netty.version'] = '4.2.12.Final'`을 `build.gradle`에 추가하면 동일한 효과입니다.
 
 ---
 
