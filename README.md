@@ -13,24 +13,86 @@ Java implementation of [DanProtocol v3.5](./dan-protocol.md). Wire-compatible wi
 
 ---
 
+## Why WebSocket?
+
+TCP, UDP, HTTP polling, SSE, gRPC streaming -- real-time 통신 선택지는 많습니다. 그 중에서 **WebSocket을 써야 하는 이유**:
+
+| | WebSocket | HTTP Polling | SSE | Raw TCP/UDP | gRPC Stream |
+|---|---|---|---|---|---|
+| 양방향 통신 | ✅ | ❌ (요청-응답) | ❌ (서버→클라만) | ✅ | ✅ |
+| 브라우저 지원 | ✅ 네이티브 | ✅ | ✅ | ❌ | ❌ (grpc-web) |
+| CDN/프록시 호환 | ✅ Cloudflare, AWS ALB | ✅ | ✅ | ❌ 대부분 차단 | △ |
+| DDoS 방어 | ✅ **CF/AWS WAF 그대로 적용** | ✅ | ✅ | ❌ 직접 구축 | △ |
+| 모바일/Unity | ✅ 모든 플랫폼 | ✅ | △ | ✅ | △ |
+| 지연시간 | **~1ms** (상시 연결) | 100ms+ (매번 핸드셰이크) | ~1ms | ~1ms | ~1ms |
+| 방화벽 통과 | ✅ **443 포트, HTTPS 업그레이드** | ✅ | ✅ | ❌ 커스텀 포트 차단 | △ |
+
+**핵심**: WebSocket은 브라우저에서 유일하게 **양방향 + 저지연 + CDN 호환**을 동시에 만족하는 프로토콜입니다. 게임, 대시보드, 협업 도구 등 실시간 앱의 사실상 표준 전송 계층입니다.
+
+TCP/UDP가 더 빠르다고? 맞습니다. 하지만 브라우저에서 안 되고, Cloudflare 뒤에 숨을 수 없고, 방화벽에 막힙니다. **WebSocket은 "충분히 빠르면서 어디서든 되는"** 선택입니다.
+
+---
+
 ## Why dan-websocket?
 
-Building real-time features with raw WebSocket or libraries like Socket.IO means writing serialization, diffing, reconnection, and batching from scratch. dan-websocket does all of that for you with a single method call.
+WebSocket 위에서 **무엇을 실어 보내느냐**가 진짜 차이를 만듭니다.
 
-You call `set(key, value)` on the server. Every connected client receives the update instantly as a compact binary frame. No JSON parsing, no manual diffing, no serialization boilerplate.
+대부분의 라이브러리(Socket.IO, ws, 등)는 JSON을 그대로 보냅니다. dan-websocket은 **커스텀 바이너리 프로토콜(DanProtocol v3.5)** 위에서 동작합니다.
 
-| | JSON WebSocket | Socket.IO | **dan-websocket** |
-|---|---|---|---|
-| A boolean update | `{"key":"alive","value":true}` = 30+ bytes | Similar + event overhead | **9 bytes** |
-| Number encoding | Always string or 8 bytes | Same | **VarNumber: 1-5 bytes** (50-75% smaller) |
-| Type safety | Parse then cast | Parse then cast | **Auto-typed on the wire** |
-| Reconnection | Build it yourself | Built-in (JSON re-sync) | **Built-in with binary state recovery** |
-| Multi-device sync | DIY per-connection | DIY per-connection | **Principal-based (1 state -> N sessions)** |
-| Array of 100 elements, shift+push | 100 value updates | 100 value updates | **2 frames (shift + new value)** |
-| Nested object change | Re-serialize entire object | Re-emit entire object | **Only changed leaf values sent** |
-| Batching | None | None | **100ms auto-batch with dedup** |
+`set(key, value)` 한 줄이면 서버 상태가 연결된 모든 클라이언트에 자동 동기화됩니다. JSON 파싱도, 수동 diff도, 직렬화 보일러플레이트도 없습니다.
 
-**Core idea: objects in, objects out, binary in between.** Only changed fields are sent -- up to 99% less traffic than re-sending full JSON.
+### vs 경쟁 라이브러리
+
+| | JSON WebSocket | Socket.IO | Colyseus | **dan-websocket** |
+|---|---|---|---|---|
+| boolean 업데이트 | 30+ bytes | 유사 + 오버헤드 | MsgPack ~10B | **9 bytes** |
+| 숫자 인코딩 | 문자열 or 8B | 동일 | MsgPack | **VarNumber: 1-5B** (50-75% 절감) |
+| 타입 안전성 | 파싱 후 캐스트 | 동일 | Schema 정의 | **와이어에서 자동 타입** |
+| 재접속 | 직접 구현 | 내장 (JSON) | 내장 (JSON) | **바이너리 상태 복구** |
+| 멀티디바이스 | 직접 구현 | 직접 구현 | 직접 구현 | **Principal (1상태 → N세션)** |
+| 배열 100개 shift+push | 100 프레임 | 100 프레임 | 100 프레임 | **2 프레임** (98% 절감) |
+| 중첩 객체 변경 | 전체 재전송 | 전체 재전송 | 전체 재전송 | **변경된 리프만 전송** |
+| 배치 전송 | 없음 | 없음 | 없음 | **100ms 자동 배치 + dedup** |
+| CDN 뒤에서 동작 | ✅ | ✅ | ✅ | ✅ |
+| 지원 언어 | 1-2개 | 다수 | TS+Unity | **8개 (Java, TS, C#, Dart, Python, Go, Swift, C++)** |
+| 가격 | 무료 | 무료 | 유료 플랜 | **무료 (MIT)** |
+
+### CDN + DDoS 방어 = 프로덕션 보안
+
+dan-websocket은 표준 WebSocket(`wss://`)을 사용합니다. 이는 **Cloudflare, AWS CloudFront, Azure Front Door** 등 CDN 뒤에 그대로 배치할 수 있다는 뜻입니다:
+
+```
+[Client]  →  wss://  →  [Cloudflare CDN / WAF / DDoS Shield]
+                                      ↓
+                           [Origin: dan-websocket Server]
+```
+
+**이 구조의 이점**:
+
+- **DDoS 방어 무료** — Cloudflare Free 플랜으로도 L3/L4/L7 공격 흡수. dan-websocket의 `setMaxConnections()` / `setMaxFramesPerSec()`은 Origin 레벨 2차 방어선
+- **바이너리라 스니핑/변조 어려움** — JSON은 Wireshark로 즉시 읽히지만, DanProtocol은 커스텀 바이너리라 리버스 엔지니어링 비용이 높음
+- **글로벌 지연시간 감소** — CDN의 Anycast로 클라이언트 → 가장 가까운 PoP → Origin 연결
+- **SSL 인증서 자동** — Cloudflare/CF Workers가 `wss://` TLS를 자동 처리
+- **별도 인프라 불필요** — 소규모 게임 스튜디오도 서버 1대 + Cloudflare 앞단으로 글로벌 서비스 가능
+
+TCP/UDP 기반 게임 서버(Photon, Mirror 등)는 CDN 뒤에 놓을 수 없습니다. 커스텀 포트를 쓰고, 방화벽에 막히며, DDoS 방어를 직접 구축해야 합니다. **WebSocket + CDN 조합은 인프라 비용과 보안 리스크를 동시에 해결합니다.**
+
+### 8개 언어, 하나의 프로토콜
+
+```
+서버 (어떤 언어든)          클라이언트 (어떤 플랫폼이든)
+─────────────────          ─────────────────────────
+Java (Netty)         ←→    Unity (C#)
+TypeScript (ws)      ←→    Flutter (Dart)
+Python (websockets)  ←→    iOS (Swift)
+Go (gorilla)         ←→    Unreal Engine (C++)
+                     ←→    브라우저 (TypeScript)
+                     ←→    서버 스크립트 (Python/Go)
+```
+
+모든 조합이 **동일한 DanProtocol v3.5 와이어 포맷**으로 통신합니다. 서버를 Java로 만들고 클라이언트를 Unity(C#) + Flutter(Dart) + 웹(TS)으로 만들어도 프로토콜 변환 없이 그대로 동작합니다.
+
+**Core idea: objects in, objects out, binary in between.** 변경된 필드만 전송 — JSON 대비 최대 99% 트래픽 절감.
 
 ---
 
