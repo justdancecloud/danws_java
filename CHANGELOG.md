@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.4.8] - 2026-04-16
+### Fixed
+- **KeyRegistry unbounded growth (DoS).** A malicious client could register unlimited keys via `CLIENT_KEY_REGISTRATION`, exhausting server memory. `KeyRegistry` now enforces a default limit of 10,000 keys per registry; throws `KEY_LIMIT_EXCEEDED` when exceeded.
+- **BulkQueue unbounded growth (Slow Consumer DoS).** A client that opened a WebSocket but never read data caused the per-session `BulkQueue` to accumulate frames with no upper bound. `BulkQueue` now enforces a 50,000-frame limit; on overflow it disposes the queue and closes the slow consumer's channel.
+- **Topic name injection.** Client-supplied topic names were accepted without validation, allowing reserved names (`__broadcast__`), special characters, or excessively long strings. Topic names are now validated against `[a-zA-Z0-9_.-]{1,128}` and capped at 100 topics per session.
+
 ## [2.4.7] - 2026-04-16
 ### Fixed
 - **`authTimeout` was dead code — unauthenticated sockets leaked (DoS).** `enableAuthorization(enabled, timeoutMs)` stored the timeout value but no code ever read it, so clients that opened a WebSocket and never sent AUTH accumulated in `tmpSessions` indefinitely. An attacker could exhaust memory/connection slots by holding auth-stalled sockets. `authTimeout` is now enforced by a per-session scheduled watchdog that closes the channel, disposes the bulk queue/heartbeat, and evicts the `tmpSessions` entry if AUTH has not completed in time. Same mechanism also recovers sessions whose `onAuthorize` callback threw. Parity with the TypeScript server, which already enforced this.

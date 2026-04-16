@@ -19,13 +19,17 @@ import java.util.function.Consumer;
  */
 public class BulkQueue {
 
+    static final int DEFAULT_MAX_QUEUE_SIZE = 50_000;
+
     private final long flushIntervalMs;
     private final BiConsumer<String, Exception> log;
+    private final int maxQueueSize;
 
     private final EventLoop eventLoop;
     private final List<Frame<?>> queue = new ArrayList<>();
     private final Map<Integer, Integer> valueDedupIndex = new HashMap<>();
     private Consumer<byte[]> onFlush;
+    private Runnable onOverflow;
     private ScheduledFuture<?> flushTask;
     private boolean disposed;
 
@@ -38,10 +42,17 @@ public class BulkQueue {
     }
 
     public BulkQueue(EventLoop eventLoop, long flushIntervalMs, BiConsumer<String, Exception> log) {
+        this(eventLoop, flushIntervalMs, log, DEFAULT_MAX_QUEUE_SIZE);
+    }
+
+    public BulkQueue(EventLoop eventLoop, long flushIntervalMs, BiConsumer<String, Exception> log, int maxQueueSize) {
         this.eventLoop = eventLoop;
         this.flushIntervalMs = flushIntervalMs;
         this.log = log;
+        this.maxQueueSize = maxQueueSize;
     }
+
+    public void onOverflow(Runnable fn) { this.onOverflow = fn; }
 
     public void onFlush(Consumer<byte[]> fn) {
         if (eventLoop.inEventLoop()) {
@@ -68,6 +79,12 @@ public class BulkQueue {
 
     private void doEnqueue(Frame<?> frame) {
         if (disposed) return;
+        if (queue.size() >= maxQueueSize) {
+            if (log != null) log.accept("BulkQueue overflow (" + maxQueueSize + " frames) — disconnecting slow consumer", null);
+            dispose();
+            if (onOverflow != null) { try { onOverflow.run(); } catch (Exception ignored) {} }
+            return;
+        }
 
         if (frame.frameType() == FrameType.SERVER_RESET) {
             valueDedupIndex.clear();

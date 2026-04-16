@@ -8,21 +8,28 @@ import java.util.regex.Pattern;
 
 public class KeyRegistry {
     private static final Pattern KEY_PATH_REGEX = Pattern.compile("^[a-zA-Z0-9_]+(\\.[a-zA-Z0-9_]+)*$");
+    static final int DEFAULT_MAX_KEYS = 10_000;
 
     public record KeyEntry(int keyId, String path, DataType type) {}
 
     private final Map<Integer, KeyEntry> byId = new LinkedHashMap<>();
     private final Map<String, KeyEntry> byPath = new LinkedHashMap<>();
     private final int initialNextId;
+    private final int maxKeys;
     private int nextId;
 
     public KeyRegistry() {
-        this(1);
+        this(1, DEFAULT_MAX_KEYS);
     }
 
     public KeyRegistry(int startingNextId) {
+        this(startingNextId, DEFAULT_MAX_KEYS);
+    }
+
+    public KeyRegistry(int startingNextId, int maxKeys) {
         this.initialNextId = startingNextId;
         this.nextId = startingNextId;
+        this.maxKeys = maxKeys;
     }
 
     public static void validateKeyPath(String path) {
@@ -37,8 +44,16 @@ public class KeyRegistry {
         }
     }
 
+    private void enforceLimit() {
+        if (byId.size() >= maxKeys) {
+            throw new DanWSException("KEY_LIMIT_EXCEEDED",
+                "Key registry limit reached (" + maxKeys + "). Too many unique keys.");
+        }
+    }
+
     public KeyEntry registerOne(int keyId, String path, DataType type) {
         validateKeyPath(path);
+        if (!byPath.containsKey(path)) enforceLimit();
         KeyEntry entry = new KeyEntry(keyId, path, type);
         byId.put(keyId, entry);
         byPath.put(path, entry);
@@ -48,6 +63,7 @@ public class KeyRegistry {
 
     public int registerNew(String path, DataType type) {
         validateKeyPath(path);
+        if (!byPath.containsKey(path)) enforceLimit();
         if (nextId == Integer.MIN_VALUE) {
             throw new com.danws.protocol.DanWSException("KEY_ID_OVERFLOW",
                     "Exhausted 32-bit keyId space — recycle keys or restart session");

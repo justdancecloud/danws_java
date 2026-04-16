@@ -29,6 +29,8 @@ public class DanWebSocketServer {
     private static final String BROADCAST_PRINCIPAL = "__broadcast__";
     private static final Pattern TOPIC_NAME_PATTERN = Pattern.compile("^topic\\.(\\d+)\\.name$");
     private static final Pattern TOPIC_PARAM_PATTERN = Pattern.compile("^topic\\.(\\d+)\\.param\\.(.+)$");
+    private static final Pattern TOPIC_NAME_VALID = Pattern.compile("^[a-zA-Z0-9_.\\-]{1,128}$");
+    private static final int MAX_TOPICS_PER_SESSION = 100;
 
     private final Mode mode;
     private final long ttl;
@@ -466,6 +468,7 @@ public class DanWebSocketServer {
             // Recreate BulkQueue and HeartbeatManager on new EventLoop
             existing.bulkQueue.dispose();
             existing.bulkQueue = new BulkQueue(ch.eventLoop(), flushIntervalMs, this.debug);
+            existing.bulkQueue.onOverflow(() -> { if (ch.isActive()) ch.close(); });
             existing.session.setEnqueue(f -> existing.bulkQueue.enqueue(f));
             existing.heartbeat.stop();
             existing.heartbeat = new HeartbeatManager(ch.eventLoop());
@@ -498,6 +501,7 @@ public class DanWebSocketServer {
 
         session.setEnqueue(f -> bulkQueue.enqueue(f));
         bulkQueue.onFlush(data -> sendBytes(ch, data));
+        bulkQueue.onOverflow(() -> { if (ch.isActive()) ch.close(); });
         heartbeat.onSend(data -> sendBytes(ch, data));
         heartbeat.onTimeout(() -> handleSessionDisconnect(uuid));
         heartbeat.start();
@@ -566,7 +570,9 @@ public class DanWebSocketServer {
                     KeyRegistry.KeyEntry entry = internal.clientRegistry.getByPath(path);
                     if (entry != null) {
                         String topicName = (String) internal.clientValues.get(entry.keyId());
-                        if (topicName != null) {
+                        if (topicName != null && TOPIC_NAME_VALID.matcher(topicName).matches()
+                                && !BROADCAST_PRINCIPAL.equals(topicName)
+                                && newTopics.size() < MAX_TOPICS_PER_SESSION) {
                             String wireIdx = m.group(1);
                             indexToName.put(wireIdx, topicName);
                             nameToIndex.put(topicName, Integer.parseInt(wireIdx));
