@@ -203,6 +203,10 @@ public class DanWebSocketServer {
     public void enableAuthorization(boolean enabled, long timeoutMs) { this.authEnabled = enabled; this.authTimeout = timeoutMs; }
 
     public void authorize(String clientUuid, String token, String principal) {
+        if (principal == null) {
+            throw new IllegalArgumentException(
+                "authorize(): principal must not be null. To deny a token, call reject(clientUuid, reason) instead.");
+        }
         InternalSession internal = tmpSessions.remove(clientUuid);
         if (internal == null) return;
 

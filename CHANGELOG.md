@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.4.6] - 2026-04-16
+### Fixed
+- **`authorize()` NPE when principal is null.** Calling `server.authorize(uuid, token, null)` — a common mis-pattern used to try to reject a bad token — threw `NullPointerException` deep inside `ConcurrentHashMap` via Netty's `channelRead0`, surfacing as a confusing "Netty error" in application logs. `authorize()` now validates up-front and throws `IllegalArgumentException` with a clear message pointing at the correct API: `server.reject(clientUuid, reason)`.
+
 ## [2.4.5] - 2026-04-11
 ### Changed
 - **`Frame` is now generic `Frame<T>`** — payload type parameter replaces raw `Object payload`. Producers use specific types (`Frame<String>` for key-registration, `Frame<byte[]>` for identify, `Frame<Void>` for signals, etc.); pipeline code routes frames as `Frame<?>`. Compile-time safety for known payload shapes while keeping full runtime flexibility. All 12 affected files updated with diamond operator + wildcard parameters; `-Xlint:unchecked` remains clean.

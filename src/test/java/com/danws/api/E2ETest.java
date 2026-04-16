@@ -175,6 +175,18 @@ class E2ETest {
     }
 
     @Test
+    void authorizeRejectsNullPrincipal() throws Exception {
+        server = new DanWebSocketServer(19125, DanWebSocketServer.Mode.PRINCIPAL);
+        Thread.sleep(100);
+        server.enableAuthorization(true);
+
+        IllegalArgumentException ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> server.authorize("any-uuid", "any-token", null));
+        assertTrue(ex.getMessage().toLowerCase().contains("reject"));
+    }
+
+    @Test
     void sessionManagement() throws Exception {
         server = new DanWebSocketServer(19130, DanWebSocketServer.Mode.PRINCIPAL);
         Thread.sleep(100);
