@@ -17,6 +17,7 @@ import io.netty.handler.codec.http.websocketx.*;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -41,6 +42,8 @@ public class DanWebSocketServer {
     private final long principalEvictionTtl;
     private boolean authEnabled;
     private long authTimeout = 5000;
+    private int maxConnections = 0;
+    private int maxFramesPerSec = 0;
 
     /** Protocol version: 3.5 */
     private static final int PROTOCOL_MAJOR = 3;
@@ -63,6 +66,10 @@ public class DanWebSocketServer {
     private final List<BiConsumer<DanWebSocketSession, TopicInfo>> onTopicSubscribe = new ArrayList<>();
     private final List<BiConsumer<DanWebSocketSession, String>> onTopicUnsubscribe = new ArrayList<>();
     private final List<BiConsumer<DanWebSocketSession, TopicInfo>> onTopicParamsChange = new ArrayList<>();
+
+    // ── Metrics counters ──
+    private final LongAdder framesIn = new LongAdder();
+    private final LongAdder framesOut = new LongAdder();
 
     private BiConsumer<String, Exception> debug;
 
@@ -204,6 +211,19 @@ public class DanWebSocketServer {
     public void enableAuthorization(boolean enabled) { this.authEnabled = enabled; }
     public void enableAuthorization(boolean enabled, long timeoutMs) { this.authEnabled = enabled; this.authTimeout = timeoutMs; }
 
+    public void setMaxConnections(int max) { this.maxConnections = max; }
+    public void setMaxFramesPerSec(int max) { this.maxFramesPerSec = max; }
+
+    // ── Metrics ──
+
+    public record Metrics(int activeSessions, int pendingSessions, int principalCount,
+                          long framesIn, long framesOut) {}
+
+    public Metrics metrics() {
+        return new Metrics(sessions.size(), tmpSessions.size(), principals.size(),
+                framesIn.sum(), framesOut.sum());
+    }
+
     public void authorize(String clientUuid, String token, String principal) {
         if (principal == null) {
             throw new IllegalArgumentException(
@@ -294,6 +314,8 @@ public class DanWebSocketServer {
         private final StreamParser parser = new StreamParser((int) maxMessageSize);
         private boolean identified = false;
         private String clientUuid = "";
+        private int frameCount = 0;
+        private long windowStart = System.currentTimeMillis();
 
         @Override
         public void handlerAdded(ChannelHandlerContext ctx) {
@@ -306,6 +328,16 @@ public class DanWebSocketServer {
             });
 
             parser.onFrame(frame -> {
+                framesIn.increment();
+                if (maxFramesPerSec > 0) {
+                    long now = System.currentTimeMillis();
+                    if (now - windowStart >= 1000) { frameCount = 0; windowStart = now; }
+                    if (++frameCount > maxFramesPerSec) {
+                        log("Frame rate exceeded (" + maxFramesPerSec + "/s) — closing " + clientUuid, null);
+                        ctx.close();
+                        return;
+                    }
+                }
                 if (!identified) {
                     if (frame.frameType() != FrameType.IDENTIFY) { ctx.close(); return; }
                     if (!(frame.payload() instanceof byte[] payload) || (payload.length != 16 && payload.length != 18)) { ctx.close(); return; }
@@ -452,6 +484,13 @@ public class DanWebSocketServer {
     }
 
     private void handleIdentified(Channel ch, String uuid) {
+        int total = sessions.size() + tmpSessions.size();
+        if (maxConnections > 0 && !sessions.containsKey(uuid) && total >= maxConnections) {
+            log("Max connections reached (" + maxConnections + ") — rejecting " + uuid, null);
+            ch.close();
+            return;
+        }
+
         InternalSession existing = sessions.get(uuid);
         if (existing != null) {
             // Remove from principal index before reconnect to avoid leak
@@ -711,8 +750,9 @@ public class DanWebSocketServer {
         if (f != null) { f.cancel(false); internal.authTimeoutFuture = null; }
     }
 
-    private static void sendBytes(Channel ch, byte[] data) {
+    private void sendBytes(Channel ch, byte[] data) {
         if (ch != null && ch.isActive()) {
+            framesOut.increment();
             ByteBuf buf = ch.alloc().buffer(data.length);
             buf.writeBytes(data);
             ch.writeAndFlush(new BinaryWebSocketFrame(buf));

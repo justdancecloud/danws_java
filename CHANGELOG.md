@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.4.9] - 2026-04-16
+### Added
+- **`setMaxConnections(int)`** — caps concurrent sessions+tmpSessions. 0 = unlimited (default). Exceeding clients are rejected at IDENTIFY.
+- **`setMaxFramesPerSec(int)`** — per-client frame rate limit. 0 = unlimited (default). Exceeding clients are disconnected. 1-second sliding window, reset per connection.
+- **`metrics()`** — returns a `Metrics` snapshot: `activeSessions`, `pendingSessions`, `principalCount`, `framesIn`, `framesOut`. Counters are cumulative (`LongAdder`-backed); suitable for periodic polling or Prometheus-style scrape.
+
 ## [2.4.8] - 2026-04-16
 ### Fixed
 - **KeyRegistry unbounded growth (DoS).** A malicious client could register unlimited keys via `CLIENT_KEY_REGISTRATION`, exhausting server memory. `KeyRegistry` now enforces a default limit of 10,000 keys per registry; throws `KEY_LIMIT_EXCEEDED` when exceeded.
